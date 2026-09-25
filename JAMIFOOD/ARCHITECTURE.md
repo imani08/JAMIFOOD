@@ -251,3 +251,36 @@ sont marqués **À VALIDER** dans Settings tant que JAMI FOOD ne les a pas valid
 Le schéma conceptuel et les détails de contraintes sont dans
 [`DATA_MODEL.md`](DATA_MODEL.md), et l'état de couverture initial dans
 [`COMPLIANCE_MATRIX.md`](COMPLIANCE_MATRIX.md).
+
+## Revue du 25 septembre 2026 et ordre de réalisation
+
+Références : cahier des charges Word fourni et mission technique complémentaire
+(99 sections). L'affiche fixe la direction graphique (crème, bordeaux, rouge,
+doré), sans remplacer les règles financières du cahier.
+
+Constat du code initial : schéma Prisma compact invalide, aucune migration,
+authentification sans session, aucun garde RBAC, paiements sans ledger ni contrôle
+du montant, interfaces statiques. Les documents décrivent une cible et ne prouvent
+pas sa réalisation. La mise en production est donc exclue à ce stade.
+
+Ordre des lots : (1) schéma exécutable, migration, session et permissions ;
+(2) clients et QR, abonnements et droits datés ; (3) commande, paiement et ledger,
+reçus et cuisine ; (4) clôture, livraison, rapports ; (5) continuité et reprise ;
+(6) phase 2 isolée ; (7) recette R01–R16, sécurité et déploiement.
+Chaque lot doit être vérifié avant toute déclaration de conformité.
+
+Décisions métier ouvertes : calendriers et dimanche, report et suspension,
+acompte et échéance, Flex, tarifs hors grille, livraison, taux et arrondi,
+remboursements, reconnaissance du CA, conservation des données. Les règles de
+production restent inactives tant qu'elles ne sont pas validées. Les jeux DEMO
+utilisent des paramètres explicitement fictifs, séparés des environnements réels.
+
+Décision transactionnelle : PostgreSQL demeure l'unique autorité de validation.
+Les mutations verrouillent d'abord leur clé d'idempotence puis les agrégats métier
+concernés. Le résultat et l'audit sont enregistrés dans la même transaction.
+Le scan ne consomme rien, et les transitions de service ne créent pas de recettes.
+La cuisine reçoit des projections minimales sans données financières du client.
+
+Le lancement local peut employer un stockage temporaire de dépendances en raison
+du disque presque plein. Ce stockage ne constitue jamais une stratégie de
+persistance ou de sauvegarde de production.
