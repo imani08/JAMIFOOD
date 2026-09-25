@@ -1,0 +1,1 @@
+export default function OrdersPage(){return <><h1>Commandes</h1><section className="card"><p className="muted">Les commandes et leur historique de statuts seront affichés ici. Le numéro CMD demeure identique de la caisse à la remise.</p></section></>}

@@ -1,0 +1,1 @@
+export default function ReportsPage(){return <><h1>Rapports</h1><section className="card"><p className="muted">Les rapports distingueront ventes, encaissements, trésorerie, repas servis, abonnements et dépenses.</p></section></>}

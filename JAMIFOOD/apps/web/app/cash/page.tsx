@@ -1,0 +1,1 @@
+export default function CashPage(){return <><h1>Caisse</h1><section className="card"><h2>Session</h2><p className="muted">Ouverture, mouvements, dépenses et clôture à comptage aveugle sont contrôlés par permissions côté API.</p></section></>}

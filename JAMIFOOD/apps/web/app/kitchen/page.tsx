@@ -1,0 +1,2 @@
+const columns=[['À préparer','PRENDRE EN CHARGE'],['En préparation','TERMINER'],['Prêtes','REMETTRE']];
+export default function KitchenPage(){return <><p className="muted">Cuisine · Seules les commandes confirmées sont visibles</p><h1>File de cuisine</h1><div className="columns">{columns.map(([title,action])=><section className="card" key={title}><h2>{title}</h2><p className="muted">Aucune commande pour le moment.</p><button className="secondary" disabled>{action}</button></section>)}</div></>}

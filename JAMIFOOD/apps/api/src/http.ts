@@ -1,0 +1,5 @@
+import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
+import { Request, Response } from 'express';
+export class DomainError extends HttpException { constructor(public readonly code: string, message: string, status = HttpStatus.CONFLICT) { super({ success: false, error: { code, message } }, status); } }
+@Catch()
+export class ApiExceptionFilter implements ExceptionFilter { catch(exception: unknown, host: ArgumentsHost) { const ctx = host.switchToHttp(); const req = ctx.getRequest<Request>(); const res = ctx.getResponse<Response>(); const status = exception instanceof HttpException ? exception.getStatus() : 500; const body = exception instanceof HttpException ? exception.getResponse() : { success: false, error: { code: 'INTERNAL_ERROR', message: 'Une erreur interne est survenue.' } }; res.status(status).json({ ...(typeof body === 'object' ? body : { success: false, error: { code: 'HTTP_ERROR', message: body } }), requestId: req.headers['x-request-id'] ?? crypto.randomUUID() }); } }

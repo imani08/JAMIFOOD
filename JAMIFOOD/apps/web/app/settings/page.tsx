@@ -1,0 +1,1 @@
+export default function SettingsPage(){return <><h1>Paramètres</h1><section className="card"><p className="muted">Les paramètres sensibles sont audités. Les règles non validées sont affichées « À VALIDER » et ne sont jamais activées par défaut.</p></section></>}
