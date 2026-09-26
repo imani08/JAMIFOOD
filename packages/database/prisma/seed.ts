@@ -4,16 +4,26 @@ const db = new PrismaClient();
 async function main() {
   if (process.env.NODE_ENV === 'production' || process.env.SEED_DEMO !== 'true' || !process.env.DEMO_PASSWORD || process.env.DEMO_PASSWORD.length < 12) throw new Error('Seed réservé à DEMO avec mot de passe externe de 12 caractères minimum.');
   const rolePermissions: Record<string,string[]> = {
-    DIRECTION: ['users.read','users.create','users.update','users.disable','clients.read','clients.create','clients.update','clients.archive','clients.merge','subscriptions.read','subscriptions.create','subscriptions.suspend','subscriptions.cancel','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','cash.refund','cash.adjust','sales.create','sales.read','orders.create','orders.read','orders.cancel','meal.validate','meal.correct','meal.exception','kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','delivery.read','delivery.confirm','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory'],
-    RESPONSABLE_RESTAURANT: ['clients.read','clients.create','clients.update','subscriptions.read','subscriptions.create','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','sales.create','sales.read','orders.create','orders.read','meal.validate','kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','delivery.read','delivery.confirm','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory'],
+    DIRECTION: ['users.read','users.create','users.update','users.disable','clients.read','clients.create','clients.update','clients.archive','clients.merge','subscriptions.read','subscriptions.create','subscriptions.suspend','subscriptions.cancel','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','cash.refund','cash.adjust','sales.create','sales.read','orders.create','orders.read','orders.cancel','meal.validate','meal.correct','meal.exception','kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','delivery.read','delivery.confirm','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory','menus.read',
+'menus.manage',
+'menus.publish',],
+    RESPONSABLE_RESTAURANT: ['clients.read','clients.create','clients.update','subscriptions.read','subscriptions.create','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','sales.create','sales.read','orders.create','orders.read','meal.validate','kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','delivery.read','delivery.confirm','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory','menus.read',
+'menus.manage',
+'menus.publish',],
     CAISSIER: ['clients.read','clients.create','subscriptions.read','subscriptions.create','cash.open','cash.close','cash.read','sales.create','sales.read','orders.create','orders.read','meal.validate','pricing.read'],
-    CUISINE: ['kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve'],
+    CUISINE: ['kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','menus.read'],
     GESTIONNAIRE_STOCK: [
   'stock.read',
   'stock.adjust',
   'stock.inventory'
 ], LIVREUR: ['delivery.read','delivery.confirm'], ADMIN_TECHNIQUE: ['users.read','users.create','users.update','users.disable'], CLIENT: []
-  };
+  };// En environnement de développement, la Direction possède
+// toutes les permissions connues de l'application.
+rolePermissions.DIRECTION = [
+  ...new Set(
+    Object.values(rolePermissions).flat(),
+  ),
+];
   for (const code of [...new Set(Object.values(rolePermissions).flat())]) await db.permission.upsert({where:{code},update:{},create:{code,label:code}});
   for (const [code,permissions] of Object.entries(rolePermissions)) {
     const role=await db.role.upsert({where:{code},update:{},create:{code,label:code}});

@@ -18,6 +18,12 @@ enum ClientStatus {
   ARCHIVED
 }
 
+enum MenuVersionStatus {
+  DRAFT
+  PUBLISHED
+  RETIRED
+}
+
 enum QRCodeStatus {
   ACTIVE
   REVOKED
@@ -258,6 +264,7 @@ model SubscriptionPlanVersion {
   id               String           @id @default(uuid()) @db.Uuid
   planId           String           @db.Uuid
   version          Int
+  durationDays     Int              @default(30)
   price            Decimal          @db.Decimal(18, 2)
   currency         Currency
   services         Json
@@ -287,15 +294,42 @@ model Subscription {
   paidAmount       Decimal                 @default(0) @db.Decimal(18, 2)
   balance          Decimal                 @db.Decimal(18, 2)
   serviceSnapshot  Json
+  renewedFromId    String?                 @db.Uuid
   deliveryIncluded Boolean                 @default(false)
   createdAt        DateTime                @default(now())
   updatedAt        DateTime                @updatedAt
   client           Client                  @relation(fields: [clientId], references: [id], onDelete: Restrict)
   planVersion      SubscriptionPlanVersion @relation(fields: [planVersionId], references: [id], onDelete: Restrict)
   rights           MealRight[]
+  renewedFrom      Subscription?           @relation("SubscriptionRenewal", fields: [renewedFromId], references: [id], onDelete: Restrict)
+  renewals         Subscription[]          @relation("SubscriptionRenewal")
+
+  suspensions SubscriptionSuspension[]
 
   @@index([clientId, status])
   @@index([status, startsOn, endsOn])
+}
+
+model SubscriptionSuspension {
+  id             String @id @default(uuid()) @db.Uuid
+  subscriptionId String @db.Uuid
+
+  startsOn DateTime  @db.Date
+  endsOn   DateTime? @db.Date
+
+  reason String
+
+  endDateExtended Boolean @default(false)
+
+  createdById String    @db.Uuid
+  resumedAt   DateTime?
+  resumedById String?   @db.Uuid
+
+  createdAt DateTime @default(now())
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+
+  @@index([subscriptionId, startsOn])
 }
 
 model MealRight {
@@ -366,6 +400,7 @@ model Product {
   category   ProductCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   prices     ProductPrice[]
   orderItems OrderItem[]
+  menuItems  MenuItem[]
 
   @@index([categoryId, active, available])
   @@index([name])
@@ -401,10 +436,69 @@ model PriceVersion {
   @@index([productPriceId, effectiveFrom])
 }
 
+model Menu {
+  id           String   @id @default(uuid()) @db.Uuid
+  businessDate DateTime @db.Date
+  serviceCode  String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  versions MenuVersion[]
+
+  @@unique([businessDate, serviceCode])
+  @@index([businessDate, serviceCode])
+}
+
+model MenuVersion {
+  id            String            @id @default(uuid()) @db.Uuid
+  menuId        String            @db.Uuid
+  imageUrl      String?
+  version       Int
+  status        MenuVersionStatus @default(DRAFT)
+  notes         String?
+  createdById   String            @db.Uuid
+  publishedById String?           @db.Uuid
+  createdAt     DateTime          @default(now())
+  publishedAt   DateTime?
+
+  menu   Menu       @relation(fields: [menuId], references: [id], onDelete: Restrict)
+  items  MenuItem[]
+  orders Order[]
+
+  @@unique([menuId, version])
+  @@index([menuId, status])
+}
+
+model MenuItem {
+  id            String @id @default(uuid()) @db.Uuid
+  menuVersionId String @db.Uuid
+  productId     String @db.Uuid
+
+  quantityAvailable Int
+  quantitySold      Int     @default(0)
+  available         Boolean @default(true)
+  position          Int     @default(0)
+
+  variants        Json?
+  productSnapshot Json?
+  priceSnapshot   Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  menuVersion MenuVersion @relation(fields: [menuVersionId], references: [id], onDelete: Restrict)
+  product     Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([menuVersionId, productId])
+  @@index([menuVersionId, available])
+  @@index([productId])
+}
+
 model Order {
   id              String               @id @default(uuid()) @db.Uuid
   number          String               @unique
   clientId        String?              @db.Uuid
+  menuVersionId   String?              @db.Uuid
   serviceMode     ServiceMode
   status          OrderStatus          @default(RECEIVED)
   businessDate    DateTime             @db.Date
@@ -422,6 +516,8 @@ model Order {
   delivery        Delivery?
   mealConsumption MealConsumption?
   reservation     MealReservation?
+
+  menuVersion MenuVersion? @relation(fields: [menuVersionId], references: [id], onDelete: Restrict)
 
   @@index([status, createdAt])
   @@index([clientId, createdAt])

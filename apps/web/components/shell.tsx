@@ -8,7 +8,12 @@ import { api } from '../lib/api';
 type User = { username: string; firstName: string; permissions: string[] };
 const UserContext = createContext<User | null>(null);
 export const useUser = () => useContext(UserContext);
-const links = [ ['/', 'Vue d’ensemble', LayoutDashboard, 'reports.read'], ['/pos','Caisse · TPE',CreditCard,'sales.create'],['/products','Produits',Utensils,'pricing.read'], ['/kitchen','Cuisine',Utensils,'kitchen.read'], ['/orders','Commandes',ClipboardList,'orders.read'], ['/clients','Clients',Users,'clients.read'], ['/subscriptions','Abonnements',CalendarDays,'subscriptions.read'], ['/meals','Contrôle des repas',ScanLine,'meal.validate'], ['/cash','Caisses & clôtures',Wallet,'cash.read'], ['/expenses','Dépenses',Wallet,'cash.expense'], ['/stock','Stocks & achats',Package,'stock.read'], ['/reports','Rapports',LayoutDashboard,'reports.read'], ['/audit','Journal d’audit',ShieldCheck,'audit.read'], ['/users','Utilisateurs',Users,'users.read'], ['/settings','Paramètres',Settings,'pricing.read'] ] as const;
+const links = [ ['/', 'Vue d’ensemble', LayoutDashboard, 'reports.read'], ['/pos','Caisse · TPE',CreditCard,'sales.create'],[
+  '/menus',
+  'Menus',
+  CalendarDays,
+  'menus.read',
+],['/products','Produits',Utensils,'pricing.read'], ['/kitchen','Cuisine',Utensils,'kitchen.read'], ['/orders','Commandes',ClipboardList,'orders.read'], ['/clients','Clients',Users,'clients.read'], ['/subscriptions','Abonnements',CalendarDays,'subscriptions.read'], ['/meals','Contrôle des repas',ScanLine,'meal.validate'], ['/cash','Caisses & clôtures',Wallet,'cash.read'], ['/expenses','Dépenses',Wallet,'cash.expense'], ['/stock','Stocks & achats',Package,'stock.read'], ['/reports','Rapports',LayoutDashboard,'reports.read'], ['/audit','Journal d’audit',ShieldCheck,'audit.read'], ['/users','Utilisateurs',Users,'users.read'], ['/settings','Paramètres',Settings,'pricing.read'] ] as const;
 function Frame({ children }: { children: ReactNode }) {
   const path = usePathname(), router = useRouter();
   const user = useQuery({ queryKey: ['me'], queryFn: () => api<User>('/auth/me'), retry: false, enabled: path !== '/login' });

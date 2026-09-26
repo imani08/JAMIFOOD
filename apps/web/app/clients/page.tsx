@@ -1,6 +1,1261 @@
 'use client';
-import { useState } from 'react';
-import { api } from '../../lib/api';
-import { Feedback, Field, formValues, Heading, Loading, useAction, useData } from '../../components/common';
-type Client={id:string;firstName:string;lastName:string;ulcNumber:string|null;phone:string|null;category:{label:string}};
-export default function Clients(){const [q,setQ]=useState(''),[page,setPage]=useState(1),[token,setToken]=useState('');const clients=useData<Client[]>('/clients?page='+page+'&q='+encodeURIComponent(q)),categories=useData<{id:string;label:string}[]>('/clients/categories');const a=useAction();return <><Heading title="Clients du restaurant" subtitle="Étudiants résidents, externes et personnel ULC."/><Feedback {...a}/><div className="two-columns"><section className="card"><h2>Retrouver un client</h2><label>Nom, matricule ou téléphone<input value={q} onChange={e=>{setQ(e.target.value);setPage(1);}} placeholder="Rechercher…"/></label><Loading loading={clients.isLoading} error={clients.error}/><div className="list">{clients.data?.map(c=><article className="item" key={c.id}><span><strong>{c.firstName} {c.lastName}</strong><br/><small className="muted">{c.category.label} · {c.ulcNumber||c.phone||'Sans matricule'}</small></span><button className="secondary" disabled={a.busy} onClick={()=>{if(window.confirm('Créer un nouveau code et invalider tout ancien code de ce client ?'))a.run(async()=>{const r=await api<{token:string}>('/clients/'+c.id+'/qr',{});setToken(r.token);},'Nouveau code émis. L’ancien est invalide.');}}>Nouveau code</button></article>)}</div><div className="actions"><button className="secondary" disabled={page===1} onClick={()=>setPage(page-1)}>Précédent</button><span>Page {page}</span><button className="secondary" disabled={(clients.data?.length??0)<25} onClick={()=>setPage(page+1)}>Suivant</button></div></section><form className="card" onSubmit={e=>{e.preventDefault();const f=e.currentTarget;const body=Object.fromEntries(Object.entries(formValues(f)).filter(([,v])=>v!==''));a.run(async()=>{await api('/clients',body);f.reset();});}}><h2>Nouvelle fiche client</h2><div className="form-grid"><Field label="Prénom" name="firstName"/><Field label="Nom" name="lastName"/></div><label>Catégorie<select name="categoryId" required>{categories.data?.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}</select></label><div className="form-grid"><Field label="Matricule ULC" name="ulcNumber" required={false}/><Field label="Téléphone" name="phone" required={false}/></div><Field label="Courriel" name="email" type="email" required={false}/><button className="primary" disabled={a.busy}>Enregistrer le client</button></form></div>{token&&<section className="card section"><h2>Identifiant de contrôle</h2><p className="muted">Conservez ce code pour le présenter au contrôle des repas. Il ne contient aucune donnée personnelle.</p><code style={{overflowWrap:'anywhere'}}>{token}</code><div className="actions"><button className="secondary" onClick={()=>navigator.clipboard.writeText(token)}>Copier le code</button></div></section>}</>;}
+
+import { FormEvent, useState } from 'react';
+import QRCode from 'qrcode';
+
+import {
+  api,
+  apiForm,
+  date,
+} from '../../lib/api';
+
+import {
+  Feedback,
+  Heading,
+  Loading,
+  useAction,
+  useData,
+} from '../../components/common';
+
+type Client = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  ulcNumber: string | null;
+  categoryId: string;
+  category: {
+    id: string;
+    code: string;
+    label: string;
+  };
+  phone: string | null;
+  email: string | null;
+  faculty: string | null;
+  promotion: string | null;
+  residency: string | null;
+  photoObjectKey: string | null;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type QRHistory = {
+  id: string;
+  action: string;
+  createdAt: string;
+  metadata: unknown;
+};
+
+type QRInfo = {
+  id: string;
+  status: string;
+  issuedAt: string;
+  revokedAt: string | null;
+  replacedById: string | null;
+  history: QRHistory[];
+};
+
+type ClientDetail = Client & {
+  qrCodes: QRInfo[];
+};
+
+type GeneratedQR = {
+  token: string;
+
+  qrCode: {
+    id: string;
+    status: string;
+    issuedAt: string;
+  };
+};
+
+type Category = {
+  id: string;
+  code: string;
+  label: string;
+};
+
+type PhotoUpload = {
+  objectKey: string;
+  url: string;
+};
+
+export default function Clients() {
+  const [q, setQ] =
+    useState('');
+
+  const [page, setPage] =
+    useState(1);
+
+  const [selected, setSelected] =
+    useState<ClientDetail | null>(
+      null,
+    );
+
+  const [
+    generatedToken,
+    setGeneratedToken,
+  ] = useState('');
+
+  const [
+    generatedQrImage,
+    setGeneratedQrImage,
+  ] = useState('');
+
+  const clients =
+    useData<Client[]>(
+      '/clients?page=' +
+        page +
+        '&q=' +
+        encodeURIComponent(q),
+    );
+
+  const categories =
+    useData<Category[]>(
+      '/clients/categories',
+    );
+
+  const action =
+    useAction();
+
+  async function loadClient(
+    id: string,
+  ) {
+    const detail =
+      await api<ClientDetail>(
+        `/clients/${id}`,
+      );
+
+    setSelected(detail);
+
+    return detail;
+  }
+
+  async function createClient(
+    event:
+      FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+
+    const form =
+      event.currentTarget;
+
+    const data =
+      new FormData(form);
+
+    await action.run(
+      async () => {
+        const photo =
+          data.get('photo');
+
+        let photoObjectKey:
+          | string
+          | undefined;
+
+        if (
+          photo instanceof File &&
+          photo.size > 0
+        ) {
+          const photoForm =
+            new FormData();
+
+          photoForm.append(
+            'photo',
+            photo,
+          );
+
+          const uploaded =
+            await apiForm<PhotoUpload>(
+              '/client-photos',
+              photoForm,
+            );
+
+          photoObjectKey =
+            uploaded.objectKey;
+        }
+
+        const optional = (
+          name: string,
+        ) => {
+          const value =
+            String(
+              data.get(name) ?? '',
+            ).trim();
+
+          return value || undefined;
+        };
+
+        const client =
+          await api<Client>(
+            '/clients',
+            {
+              firstName:
+                String(
+                  data.get(
+                    'firstName',
+                  ),
+                ).trim(),
+
+              lastName:
+                String(
+                  data.get(
+                    'lastName',
+                  ),
+                ).trim(),
+
+              categoryId:
+                String(
+                  data.get(
+                    'categoryId',
+                  ),
+                ),
+
+              ulcNumber:
+                optional(
+                  'ulcNumber',
+                ),
+
+              faculty:
+                optional(
+                  'faculty',
+                ),
+
+              promotion:
+                optional(
+                  'promotion',
+                ),
+
+              residency:
+                optional(
+                  'residency',
+                ),
+
+              phone:
+                optional('phone'),
+
+              email:
+                optional('email'),
+
+              ...(photoObjectKey
+                ? {
+                    photoObjectKey,
+                  }
+                : {}),
+            },
+          );
+
+        form.reset();
+
+        await loadClient(
+          client.id,
+        );
+
+        return client;
+      },
+
+      'Client enregistré.',
+    );
+  }
+
+  async function updateClient(
+    event:
+      FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+
+    if (!selected) {
+      return;
+    }
+
+    const data =
+      new FormData(
+        event.currentTarget,
+      );
+
+    await action.run(
+      async () => {
+        const photo =
+          data.get('photo');
+
+        let photoObjectKey =
+          selected.photoObjectKey ??
+          undefined;
+
+        if (
+          photo instanceof File &&
+          photo.size > 0
+        ) {
+          const photoForm =
+            new FormData();
+
+          photoForm.append(
+            'photo',
+            photo,
+          );
+
+          const uploaded =
+            await apiForm<PhotoUpload>(
+              '/client-photos',
+              photoForm,
+            );
+
+          photoObjectKey =
+            uploaded.objectKey;
+        }
+
+        const optional = (
+          name: string,
+        ) => {
+          const value =
+            String(
+              data.get(name) ?? '',
+            ).trim();
+
+          return value || undefined;
+        };
+
+        await api(
+          `/clients/${selected.id}`,
+          {
+            firstName:
+              String(
+                data.get(
+                  'firstName',
+                ),
+              ).trim(),
+
+            lastName:
+              String(
+                data.get(
+                  'lastName',
+                ),
+              ).trim(),
+
+            categoryId:
+              String(
+                data.get(
+                  'categoryId',
+                ),
+              ),
+
+            ulcNumber:
+              optional(
+                'ulcNumber',
+              ),
+
+            faculty:
+              optional(
+                'faculty',
+              ),
+
+            promotion:
+              optional(
+                'promotion',
+              ),
+
+            residency:
+              optional(
+                'residency',
+              ),
+
+            phone:
+              optional('phone'),
+
+            email:
+              optional('email'),
+
+            ...(photoObjectKey
+              ? {
+                  photoObjectKey,
+                }
+              : {}),
+          },
+        );
+
+        await loadClient(
+          selected.id,
+        );
+      },
+
+      'Fiche client mise à jour.',
+    );
+  }
+
+  async function showQr(
+    result: GeneratedQR,
+  ) {
+    const image =
+      await QRCode.toDataURL(
+        result.token,
+        {
+          width: 340,
+          margin: 2,
+
+          errorCorrectionLevel:
+            'M',
+        },
+      );
+
+    setGeneratedToken(
+      result.token,
+    );
+
+    setGeneratedQrImage(
+      image,
+    );
+  }
+
+  async function issueQr() {
+    if (!selected) {
+      return;
+    }
+
+    await action.run(
+      async () => {
+        const result =
+          await api<GeneratedQR>(
+            `/clients/${selected.id}/qr/issue`,
+            {},
+          );
+
+        await showQr(
+          result,
+        );
+
+        await loadClient(
+          selected.id,
+        );
+      },
+
+      'QR Code émis.',
+    );
+  }
+
+  async function replaceQr() {
+    if (!selected) {
+      return;
+    }
+
+    if (
+      !window.confirm(
+        'Remplacer le QR Code actif ? L’ancien sera immédiatement inutilisable.',
+      )
+    ) {
+      return;
+    }
+
+    await action.run(
+      async () => {
+        const result =
+          await api<GeneratedQR>(
+            `/clients/${selected.id}/qr/replace`,
+            {},
+          );
+
+        await showQr(
+          result,
+        );
+
+        await loadClient(
+          selected.id,
+        );
+      },
+
+      'QR Code remplacé.',
+    );
+  }
+
+  async function revokeQr(
+    qrCodeId: string,
+  ) {
+    if (!selected) {
+      return;
+    }
+
+    if (
+      !window.confirm(
+        'Révoquer ce QR Code ? Cette opération est immédiate.',
+      )
+    ) {
+      return;
+    }
+
+    await action.run(
+      async () => {
+        await api(
+          `/clients/${selected.id}/qr/${qrCodeId}/revoke`,
+          {},
+        );
+
+        setGeneratedToken('');
+        setGeneratedQrImage('');
+
+        await loadClient(
+          selected.id,
+        );
+      },
+
+      'QR Code révoqué.',
+    );
+  }
+
+  function downloadQr() {
+    if (
+      !generatedQrImage ||
+      !selected
+    ) {
+      return;
+    }
+
+    const anchor =
+      document.createElement('a');
+
+    anchor.href =
+      generatedQrImage;
+
+    anchor.download =
+      `JAMI-FOOD-${selected.lastName}-${selected.firstName}.png`;
+
+    anchor.click();
+  }
+
+  function printQr() {
+    document.body.classList.add(
+      'print-qr-mode',
+    );
+
+    window.print();
+
+    window.setTimeout(
+      () => {
+        document.body.classList.remove(
+          'print-qr-mode',
+        );
+      },
+      500,
+    );
+  }
+
+  async function archiveClient() {
+    if (!selected) {
+      return;
+    }
+
+    if (
+      !window.confirm(
+        'Archiver cette fiche ? Son historique restera conservé et ses QR actifs seront révoqués.',
+      )
+    ) {
+      return;
+    }
+
+    await action.run(
+      async () => {
+        await api(
+          `/clients/${selected.id}/archive`,
+          {},
+        );
+
+        setSelected(null);
+        setGeneratedToken('');
+        setGeneratedQrImage('');
+      },
+
+      'Client archivé.',
+    );
+  }
+
+  const activeQr =
+    selected?.qrCodes.find(
+      (code) =>
+        code.status ===
+        'ACTIVE',
+    );
+
+  return (
+    <>
+      <Heading
+        title="Clients du restaurant"
+        subtitle="Fiches clients, photos et QR Codes sécurisés."
+      />
+
+      <Feedback
+        {...action}
+      />
+
+      <div className="two-columns">
+        <section className="card">
+          <h2>
+            Retrouver un client
+          </h2>
+
+          <label>
+            Nom, matricule,
+            téléphone ou ID
+            <input
+              value={q}
+              onChange={(event) => {
+                setQ(
+                  event.target.value,
+                );
+
+                setPage(1);
+              }}
+              placeholder="Rechercher…"
+            />
+          </label>
+
+          <Loading
+            loading={
+              clients.isLoading
+            }
+            error={
+              clients.error
+            }
+          />
+
+          <div className="list">
+            {clients.data?.map(
+              (client) => (
+                <article
+                  className="item"
+                  key={client.id}
+                >
+                  <span>
+                    <strong>
+                      {
+                        client.firstName
+                      }{' '}
+                      {
+                        client.lastName
+                      }
+                    </strong>
+
+                    <br />
+
+                    <small className="muted">
+                      {
+                        client
+                          .category
+                          .label
+                      }
+                      {' · '}
+                      {client.ulcNumber ??
+                        client.phone ??
+                        client.id}
+                    </small>
+                  </span>
+
+                  <button
+                    className="secondary"
+                    disabled={
+                      action.busy
+                    }
+                    onClick={() =>
+                      action.run(
+                        () =>
+                          loadClient(
+                            client.id,
+                          ),
+
+                        'Fiche chargée.',
+                      )
+                    }
+                  >
+                    Ouvrir
+                  </button>
+                </article>
+              ),
+            )}
+          </div>
+
+          <div className="actions">
+            <button
+              className="secondary"
+              disabled={
+                page === 1
+              }
+              onClick={() =>
+                setPage(
+                  page - 1,
+                )
+              }
+            >
+              Précédent
+            </button>
+
+            <span>
+              Page {page}
+            </span>
+
+            <button
+              className="secondary"
+              disabled={
+                (clients.data
+                  ?.length ??
+                  0) < 25
+              }
+              onClick={() =>
+                setPage(
+                  page + 1,
+                )
+              }
+            >
+              Suivant
+            </button>
+          </div>
+        </section>
+
+        <form
+          className="card"
+          onSubmit={
+            createClient
+          }
+        >
+          <h2>
+            Nouvelle fiche
+            client
+          </h2>
+
+          <div className="form-grid">
+            <label>
+              Prénom
+              <input
+                name="firstName"
+                required
+              />
+            </label>
+
+            <label>
+              Nom
+              <input
+                name="lastName"
+                required
+              />
+            </label>
+          </div>
+
+          <label>
+            Catégorie
+            <select
+              name="categoryId"
+              required
+            >
+              {categories.data?.map(
+                (category) => (
+                  <option
+                    key={
+                      category.id
+                    }
+                    value={
+                      category.id
+                    }
+                  >
+                    {
+                      category.label
+                    }
+                  </option>
+                ),
+              )}
+            </select>
+          </label>
+
+          <div className="form-grid">
+            <label>
+              Matricule ULC
+              <input
+                name="ulcNumber"
+              />
+            </label>
+
+            <label>
+              Téléphone
+              <input
+                name="phone"
+              />
+            </label>
+
+            <label>
+              Faculté
+              <input
+                name="faculty"
+              />
+            </label>
+
+            <label>
+              Promotion
+              <input
+                name="promotion"
+              />
+            </label>
+
+            <label>
+              Résidence
+              <input
+                name="residency"
+              />
+            </label>
+
+            <label>
+              Courriel
+              <input
+                name="email"
+                type="email"
+              />
+            </label>
+          </div>
+
+          <label>
+            Photo
+            <input
+              name="photo"
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+            />
+
+            <small className="muted">
+              Facultative · JPG,
+              PNG ou WEBP · 4 Mo
+              maximum.
+            </small>
+          </label>
+
+          <button
+            className="primary"
+            disabled={
+              action.busy
+            }
+          >
+            Enregistrer le
+            client
+          </button>
+        </form>
+      </div>
+
+      {selected && (
+        <section className="card section">
+          <div className="client-profile">
+            <div>
+              {selected.photoObjectKey ? (
+                <img
+                  className="client-photo"
+                  src={`/api/v1/client-photos/${selected.photoObjectKey}`}
+                  alt={`${selected.firstName} ${selected.lastName}`}
+                />
+              ) : (
+                <div className="client-photo client-photo-empty">
+                  Photo
+                </div>
+              )}
+            </div>
+
+            <div>
+              <p className="eyebrow">
+                FICHE CLIENT
+              </p>
+
+              <h2>
+                {
+                  selected.firstName
+                }{' '}
+                {
+                  selected.lastName
+                }
+              </h2>
+
+              <p className="muted">
+                {
+                  selected
+                    .category
+                    .label
+                }
+                {' · '}
+                {selected.ulcNumber ??
+                  'Sans matricule'}
+              </p>
+
+              <p className="small muted">
+                ID :{' '}
+                {selected.id}
+              </p>
+            </div>
+          </div>
+
+          <form
+            key={
+              selected.id +
+              selected.updatedAt
+            }
+            className="section"
+            onSubmit={
+              updateClient
+            }
+          >
+            <h3>
+              Informations
+            </h3>
+
+            <div className="form-grid">
+              <label>
+                Prénom
+                <input
+                  name="firstName"
+                  defaultValue={
+                    selected.firstName
+                  }
+                  required
+                />
+              </label>
+
+              <label>
+                Nom
+                <input
+                  name="lastName"
+                  defaultValue={
+                    selected.lastName
+                  }
+                  required
+                />
+              </label>
+
+              <label>
+                Catégorie
+                <select
+                  name="categoryId"
+                  defaultValue={
+                    selected.categoryId
+                  }
+                >
+                  {categories.data?.map(
+                    (
+                      category,
+                    ) => (
+                      <option
+                        key={
+                          category.id
+                        }
+                        value={
+                          category.id
+                        }
+                      >
+                        {
+                          category.label
+                        }
+                      </option>
+                    ),
+                  )}
+                </select>
+              </label>
+
+              <label>
+                Matricule ULC
+                <input
+                  name="ulcNumber"
+                  defaultValue={
+                    selected.ulcNumber ??
+                    ''
+                  }
+                />
+              </label>
+
+              <label>
+                Faculté
+                <input
+                  name="faculty"
+                  defaultValue={
+                    selected.faculty ??
+                    ''
+                  }
+                />
+              </label>
+
+              <label>
+                Promotion
+                <input
+                  name="promotion"
+                  defaultValue={
+                    selected.promotion ??
+                    ''
+                  }
+                />
+              </label>
+
+              <label>
+                Résidence
+                <input
+                  name="residency"
+                  defaultValue={
+                    selected.residency ??
+                    ''
+                  }
+                />
+              </label>
+
+              <label>
+                Téléphone
+                <input
+                  name="phone"
+                  defaultValue={
+                    selected.phone ??
+                    ''
+                  }
+                />
+              </label>
+
+              <label>
+                Courriel
+                <input
+                  name="email"
+                  type="email"
+                  defaultValue={
+                    selected.email ??
+                    ''
+                  }
+                />
+              </label>
+
+              <label>
+                Nouvelle photo
+                <input
+                  name="photo"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                />
+              </label>
+            </div>
+
+            <div className="actions">
+              <button
+                className="primary"
+                disabled={
+                  action.busy
+                }
+              >
+                Enregistrer les
+                modifications
+              </button>
+
+              <button
+                type="button"
+                className="secondary"
+                disabled={
+                  action.busy
+                }
+                onClick={
+                  archiveClient
+                }
+              >
+                Archiver
+              </button>
+            </div>
+          </form>
+
+          <div className="section">
+            <div className="section-title">
+              <h2>
+                QR Code client
+              </h2>
+
+              <span className="badge">
+                {activeQr
+                  ? 'ACTIF'
+                  : 'AUCUN QR ACTIF'}
+              </span>
+            </div>
+
+            {!activeQr && (
+              <button
+                className="primary"
+                disabled={
+                  action.busy
+                }
+                onClick={
+                  issueQr
+                }
+              >
+                Émettre un QR Code
+              </button>
+            )}
+
+            {activeQr && (
+              <div className="actions">
+                <button
+                  className="primary"
+                  disabled={
+                    action.busy
+                  }
+                  onClick={
+                    replaceQr
+                  }
+                >
+                  Remplacer le QR
+                </button>
+
+                <button
+                  className="secondary"
+                  disabled={
+                    action.busy
+                  }
+                  onClick={() =>
+                    revokeQr(
+                      activeQr.id,
+                    )
+                  }
+                >
+                  Révoquer
+                </button>
+              </div>
+            )}
+          </div>
+
+          {generatedQrImage && (
+            <section className="qr-print-card section">
+              <p className="eyebrow">
+                JAMI FOOD · ULC
+              </p>
+
+              <h2>
+                {
+                  selected.firstName
+                }{' '}
+                {
+                  selected.lastName
+                }
+              </h2>
+
+              <img
+                className="qr-image"
+                src={
+                  generatedQrImage
+                }
+                alt="QR Code JAMI FOOD"
+              />
+
+              <p className="small muted">
+                Présenter ce QR
+                Code au contrôle
+                des repas.
+              </p>
+
+              <p className="small">
+                {
+                  selected
+                    .category
+                    .label
+                }
+              </p>
+
+              <div className="actions no-print">
+                <button
+                  className="secondary"
+                  onClick={
+                    downloadQr
+                  }
+                >
+                  Télécharger PNG
+                </button>
+
+                <button
+                  className="secondary"
+                  onClick={
+                    printQr
+                  }
+                >
+                  Imprimer
+                </button>
+
+                <button
+                  className="secondary"
+                  onClick={() =>
+                    navigator.clipboard.writeText(
+                      generatedToken,
+                    )
+                  }
+                >
+                  Copier le token
+                  (DEMO)
+                </button>
+              </div>
+            </section>
+          )}
+
+          <section className="section">
+            <h3>
+              Historique des QR
+              Codes
+            </h3>
+
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>
+                      Émission
+                    </th>
+                    <th>
+                      Statut
+                    </th>
+                    <th>
+                      Révocation
+                    </th>
+                    <th>
+                      Historique
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {selected.qrCodes.map(
+                    (code) => (
+                      <tr
+                        key={
+                          code.id
+                        }
+                      >
+                        <td>
+                          {date(
+                            code.issuedAt,
+                          )}
+                        </td>
+
+                        <td>
+                          <span className="badge">
+                            {
+                              code.status
+                            }
+                          </span>
+                        </td>
+
+                        <td>
+                          {code.revokedAt
+                            ? date(
+                                code.revokedAt,
+                              )
+                            : '—'}
+                        </td>
+
+                        <td>
+                          {code.history
+                            .map(
+                              (
+                                history,
+                              ) =>
+                                `${history.action} · ${date(history.createdAt)}`,
+                            )
+                            .join(
+                              ' | ',
+                            ) ||
+                            '—'}
+                        </td>
+                      </tr>
+                    ),
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+      )}
+    </>
+  );
+}

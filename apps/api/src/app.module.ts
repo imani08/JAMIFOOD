@@ -4,6 +4,8 @@ import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { HealthController } from './health.controller';
 import { PrismaService } from './prisma.service';
 import { ProductImagesController } from './product-images';
+import { MenusController } from './menus';
+import { ClientPhotosController } from './client-photos';
 import {
   AccessGuard,
   AuthController,
@@ -43,6 +45,8 @@ import { UsersController } from './users';
     MealsController,
     UsersController,
     ProductImagesController,
+    MenusController,
+    ClientPhotosController,
   ],
   providers: [
     PrismaService,

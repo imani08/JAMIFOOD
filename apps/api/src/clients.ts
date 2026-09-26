@@ -1,59 +1,1720 @@
-import { Body, Controller, Get, Headers, Injectable, Param, Post, Query, Req } from '@nestjs/common';
-import { createClientSchema, pageSchema, uuid } from '@jami/validation';
-import { randomBytes, createHash } from 'node:crypto';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Injectable,
+  Param,
+  Post,
+  Query,
+  Req,
+} from '@nestjs/common';
+
+import {
+  createClientSchema,
+  pageSchema,
+  uuid,
+} from '@jami/validation';
+
+import {
+  createHash,
+  randomBytes,
+} from 'node:crypto';
+
 import { z } from 'zod';
-import { PrismaService } from './prisma.service';
-import { DomainError } from './http';
-import { AuthRequest, Require } from './auth';
-import { audit, mutate } from './transaction';
-const clientSelect = { id: true, firstName: true, lastName: true, ulcNumber: true, categoryId: true, category: true, phone: true, email: true, faculty: true, promotion: true, residency: true, status: true } as const;
+
+import {
+  PrismaService,
+} from './prisma.service';
+
+import {
+  DomainError,
+} from './http';
+
+import {
+  AuthRequest,
+  Require,
+} from './auth';
+
+import {
+  audit,
+  mutate,
+} from './transaction';
+
+const photoObjectKeySchema =
+  z
+    .string()
+    .regex(
+      /^[0-9a-f-]{36}\.(jpg|png|webp)$/i,
+      'Référence photo invalide.',
+    );
+
+const clientCreateSchema =
+  createClientSchema.extend({
+    photoObjectKey:
+      photoObjectKeySchema.optional(),
+  });
+
+const clientUpdateSchema =
+  clientCreateSchema
+    .partial()
+    .refine(
+      (value) =>
+        Object.keys(value).length >
+        0,
+      'Aucune modification fournie.',
+    );
+
+const mergeSchema = z
+  .object({
+    targetClientId: uuid,
+  })
+  .strict();
+
+const scanSchema = z
+  .object({
+    token: z
+      .string()
+      .min(20)
+      .max(200),
+  })
+  .strict();
+
+const clientSelect = {
+  id: true,
+  firstName: true,
+  lastName: true,
+  ulcNumber: true,
+  categoryId: true,
+  category: true,
+  phone: true,
+  email: true,
+  faculty: true,
+  promotion: true,
+  residency: true,
+  photoObjectKey: true,
+  status: true,
+  mergedIntoId: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
+function tokenHash(
+  token: string,
+) {
+  return createHash('sha256')
+    .update(token)
+    .digest('hex');
+}
+
+function newQrToken() {
+  return (
+    'JAMI-' +
+    randomBytes(32)
+      .toString('base64url')
+  );
+}
+
+function todayKinshasa() {
+  const value =
+    new Intl.DateTimeFormat(
+      'en-CA',
+      {
+        timeZone:
+          'Africa/Kinshasa',
+
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      },
+    ).format(
+      new Date(),
+    );
+
+  return new Date(
+    `${value}T00:00:00.000Z`,
+  );
+}
+
 @Injectable()
 export class ClientsService {
-  constructor(private readonly prisma: PrismaService) {}
-  create(input: unknown, key: string | undefined, actorId: string) {
-    const data = createClientSchema.parse(input);
-    return mutate(this.prisma, 'clients.create', key, actorId, data, async tx => {
-      if (!(await tx.clientCategory.findFirst({ where: { id: data.categoryId, active: true } }))) throw new DomainError('CATEGORY_INVALID', 'Catégorie client indisponible.', 400);
-      const duplicate = await tx.client.findFirst({ where: { OR: [{ firstName: { equals: data.firstName, mode: 'insensitive' }, lastName: { equals: data.lastName, mode: 'insensitive' } }, ...(data.phone ? [{ phone: data.phone }] : []), ...(data.ulcNumber ? [{ ulcNumber: data.ulcNumber }] : [])] } });
-      if (duplicate) throw new DomainError('POSSIBLE_DUPLICATE', 'Un client similaire existe déjà. Vérifiez sa fiche avant de continuer.');
-      const client = await tx.client.create({ data, select: clientSelect });
-      await audit(tx, actorId, 'CLIENT_CREATED', 'Client', client.id);
-      return client;
-    });
+  constructor(
+    private readonly prisma:
+      PrismaService,
+  ) {}
+
+  create(
+    input: unknown,
+    key:
+      | string
+      | undefined,
+    actorId: string,
+  ) {
+    const data =
+      clientCreateSchema.parse(
+        input,
+      );
+
+    return mutate(
+      this.prisma,
+      'clients.create',
+      key,
+      actorId,
+      data,
+
+      async (tx) => {
+        const category =
+          await tx.clientCategory.findFirst(
+            {
+              where: {
+                id:
+                  data.categoryId,
+
+                active: true,
+              },
+            },
+          );
+
+        if (!category) {
+          throw new DomainError(
+            'CATEGORY_INVALID',
+            'Catégorie client indisponible.',
+            400,
+          );
+        }
+
+        const duplicate =
+          await tx.client.findFirst({
+            where: {
+              OR: [
+                {
+                  firstName: {
+                    equals:
+                      data.firstName,
+
+                    mode:
+                      'insensitive',
+                  },
+
+                  lastName: {
+                    equals:
+                      data.lastName,
+
+                    mode:
+                      'insensitive',
+                  },
+                },
+
+                ...(data.phone
+                  ? [
+                      {
+                        phone:
+                          data.phone,
+                      },
+                    ]
+                  : []),
+
+                ...(data.ulcNumber
+                  ? [
+                      {
+                        ulcNumber:
+                          data.ulcNumber,
+                      },
+                    ]
+                  : []),
+              ],
+            },
+          });
+
+        if (duplicate) {
+          throw new DomainError(
+            'POSSIBLE_DUPLICATE',
+            `Un client similaire existe déjà (${duplicate.id}). Vérifiez sa fiche avant de continuer.`,
+            409,
+          );
+        }
+
+        const client =
+          await tx.client.create({
+            data,
+
+            select:
+              clientSelect,
+          });
+
+        await audit(
+          tx,
+          actorId,
+          'CLIENT_CREATED',
+          'Client',
+          client.id,
+          {
+            categoryId:
+              client.categoryId,
+          },
+        );
+
+        return client;
+      },
+    );
   }
-  async find(query: unknown) {
-    const { q, page, limit } = pageSchema.parse(query);
-    const where = { status: 'ACTIVE' as const, ...(q ? { OR: [{ firstName: { contains: q, mode: 'insensitive' as const } }, { lastName: { contains: q, mode: 'insensitive' as const } }, { ulcNumber: { contains: q, mode: 'insensitive' as const } }, { phone: { contains: q } }, ...(uuid.safeParse(q).success ? [{ id: q }] : [])] } : {}) };
-    const [data, total] = await this.prisma.$transaction([this.prisma.client.findMany({ where, take: limit, skip: (page - 1) * limit, orderBy: [{ lastName: 'asc' }, { id: 'asc' }], select: clientSelect }), this.prisma.client.count({ where })]);
-    return { data, meta: { page, limit, total } };
-  }
-  async byQr(input: unknown) {
-    const { token } = z.object({ token: z.string().min(20).max(200) }).parse(input);
-    const tokenHash = createHash('sha256').update(token).digest('hex');
-    const code = await this.prisma.qRCode.findUnique({ where: { tokenHash }, include: { client: { select: { ...clientSelect, subscriptions: { include: { planVersion: { include: { plan: true } }, rights: { where: { businessDate: new Date(new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Kinshasa' }).format(new Date())) } } } } } } } });
-    if (!code || code.status !== 'ACTIVE' || code.client.status !== 'ACTIVE') throw new DomainError('QR_CODE_REVOKED', 'Ce QR Code est invalide ou révoqué.', 404);
-    return code.client;
-  }
-  replaceQr(clientId: string, key: string | undefined, actorId: string) {
+
+  update(
+    clientId: string,
+    input: unknown,
+    key:
+      | string
+      | undefined,
+    actorId: string,
+  ) {
     uuid.parse(clientId);
-    return mutate(this.prisma, 'qr.replace', key, actorId, { clientId }, async tx => {
-      await tx.$queryRaw`SELECT id FROM "Client" WHERE id = ${clientId}::uuid FOR UPDATE`;
-      const client = await tx.client.findUnique({ where: { id: clientId } });
-      if (!client || client.status !== 'ACTIVE') throw new DomainError('NOT_FOUND', 'Client introuvable.', 404);
-      await tx.qRCode.updateMany({ where: { clientId, status: 'ACTIVE' }, data: { status: 'REPLACED', revokedAt: new Date() } });
-      const token = 'JAMI-' + randomBytes(32).toString('hex');
-      const code = await tx.qRCode.create({ data: { clientId, tokenHash: createHash('sha256').update(token).digest('hex'), history: { create: { action: 'ISSUED', actorId } } } });
-      await audit(tx, actorId, 'QR_REPLACED', 'QRCode', code.id);
-      return { token, clientId };
-    });
+
+    const data =
+      clientUpdateSchema.parse(
+        input,
+      );
+
+    return mutate(
+      this.prisma,
+      'clients.update',
+      key,
+      actorId,
+      {
+        clientId,
+        ...data,
+      },
+
+      async (tx) => {
+        const before =
+          await tx.client.findUnique({
+            where: {
+              id: clientId,
+            },
+          });
+
+        if (!before) {
+          throw new DomainError(
+            'CLIENT_NOT_FOUND',
+            'Client introuvable.',
+            404,
+          );
+        }
+
+        if (
+          before.status !==
+          'ACTIVE'
+        ) {
+          throw new DomainError(
+            'CLIENT_NOT_ACTIVE',
+            'Cette fiche client n’est plus active.',
+            409,
+          );
+        }
+
+        if (data.categoryId) {
+          const category =
+            await tx.clientCategory.findFirst(
+              {
+                where: {
+                  id:
+                    data.categoryId,
+
+                  active: true,
+                },
+              },
+            );
+
+          if (!category) {
+            throw new DomainError(
+              'CATEGORY_INVALID',
+              'Catégorie client indisponible.',
+              400,
+            );
+          }
+        }
+
+        const after =
+          await tx.client.update({
+            where: {
+              id: clientId,
+            },
+
+            data,
+
+            select:
+              clientSelect,
+          });
+
+        await tx.auditLog.create({
+          data: {
+            actorId,
+
+            action:
+              'CLIENT_UPDATED',
+
+            entityType:
+              'Client',
+
+            entityId:
+              clientId,
+
+            oldValue: {
+              firstName:
+                before.firstName,
+
+              lastName:
+                before.lastName,
+
+              categoryId:
+                before.categoryId,
+
+              ulcNumber:
+                before.ulcNumber,
+
+              phone:
+                before.phone,
+
+              email:
+                before.email,
+
+              photoObjectKey:
+                before.photoObjectKey,
+            },
+
+            newValue: {
+              firstName:
+                after.firstName,
+
+              lastName:
+                after.lastName,
+
+              categoryId:
+                after.categoryId,
+
+              ulcNumber:
+                after.ulcNumber,
+
+              phone:
+                after.phone,
+
+              email:
+                after.email,
+
+              photoObjectKey:
+                after.photoObjectKey,
+            },
+          },
+        });
+
+        return after;
+      },
+    );
+  }
+
+  async find(
+    query: unknown,
+  ) {
+    const {
+      q,
+      page,
+      limit,
+    } =
+      pageSchema.parse(query);
+
+    const where = {
+      status:
+        'ACTIVE' as const,
+
+      ...(q
+        ? {
+            OR: [
+              {
+                firstName: {
+                  contains: q,
+
+                  mode:
+                    'insensitive' as const,
+                },
+              },
+
+              {
+                lastName: {
+                  contains: q,
+
+                  mode:
+                    'insensitive' as const,
+                },
+              },
+
+              {
+                ulcNumber: {
+                  contains: q,
+
+                  mode:
+                    'insensitive' as const,
+                },
+              },
+
+              {
+                phone: {
+                  contains: q,
+                },
+              },
+
+              ...(uuid.safeParse(q)
+                .success
+                ? [
+                    {
+                      id: q,
+                    },
+                  ]
+                : []),
+            ],
+          }
+        : {}),
+    };
+
+    const [data, total] =
+      await this.prisma.$transaction(
+        [
+          this.prisma.client.findMany(
+            {
+              where,
+
+              take: limit,
+
+              skip:
+                (page - 1) *
+                limit,
+
+              orderBy: [
+                {
+                  lastName:
+                    'asc',
+                },
+
+                {
+                  id: 'asc',
+                },
+              ],
+
+              select:
+                clientSelect,
+            },
+          ),
+
+          this.prisma.client.count(
+            {
+              where,
+            },
+          ),
+        ],
+      );
+
+    return {
+      data,
+
+      meta: {
+        page,
+        limit,
+        total,
+      },
+    };
+  }
+
+  async detail(
+    clientId: string,
+  ) {
+    uuid.parse(clientId);
+
+    const client =
+      await this.prisma.client.findUnique(
+        {
+          where: {
+            id: clientId,
+          },
+
+          include: {
+            category: true,
+
+            qrCodes: {
+              orderBy: {
+                issuedAt:
+                  'desc',
+              },
+
+              include: {
+                history: {
+                  orderBy: {
+                    createdAt:
+                      'desc',
+                  },
+                },
+              },
+            },
+          },
+        },
+      );
+
+    if (!client) {
+      throw new DomainError(
+        'CLIENT_NOT_FOUND',
+        'Client introuvable.',
+        404,
+      );
+    }
+
+    return client;
+  }
+
+  async controlCard(
+    clientId: string,
+    actorId: string,
+    source: string,
+  ) {
+    uuid.parse(clientId);
+
+    const businessDate =
+      todayKinshasa();
+
+    const client =
+      await this.prisma.client.findUnique(
+        {
+          where: {
+            id: clientId,
+          },
+
+          select: {
+            ...clientSelect,
+
+            subscriptions: {
+              orderBy: {
+                startsOn:
+                  'desc',
+              },
+
+              include: {
+                planVersion: {
+                  include: {
+                    plan: true,
+                  },
+                },
+
+                rights: {
+                  where: {
+                    businessDate,
+                  },
+
+                  orderBy: {
+                    serviceCode:
+                      'asc',
+                  },
+                },
+              },
+            },
+          },
+        },
+      );
+
+    if (
+      !client ||
+      client.status !==
+        'ACTIVE'
+    ) {
+      throw new DomainError(
+        'CLIENT_NOT_ACTIVE',
+        'Client introuvable ou archivé.',
+        404,
+      );
+    }
+
+    await this.prisma.auditLog.create(
+      {
+        data: {
+          actorId,
+
+          action:
+            'CLIENT_CONTROL_VIEWED',
+
+          entityType:
+            'Client',
+
+          entityId:
+            client.id,
+
+          newValue: {
+            source,
+          },
+        },
+      },
+    );
+
+    return client;
+  }
+
+  async byQr(
+    input: unknown,
+    actorId: string,
+  ) {
+    const {
+      token,
+    } =
+      scanSchema.parse(input);
+
+    const code =
+      await this.prisma.qRCode.findUnique(
+        {
+          where: {
+            tokenHash:
+              tokenHash(token),
+          },
+
+          select: {
+            id: true,
+            clientId: true,
+            status: true,
+          },
+        },
+      );
+
+    if (
+      !code ||
+      code.status !==
+        'ACTIVE'
+    ) {
+      throw new DomainError(
+        'QR_CODE_REVOKED',
+        'Ce QR Code est invalide, révoqué ou remplacé.',
+        404,
+      );
+    }
+
+    return this.controlCard(
+      code.clientId,
+      actorId,
+      'QR',
+    );
+  }
+
+  issueQr(
+    clientId: string,
+    key:
+      | string
+      | undefined,
+    actorId: string,
+  ) {
+    uuid.parse(clientId);
+
+    return mutate(
+      this.prisma,
+      'qr.issue',
+      key,
+      actorId,
+      {
+        clientId,
+      },
+
+      async (tx) => {
+        await tx.$queryRaw`
+          SELECT id
+          FROM "Client"
+          WHERE id = ${clientId}::uuid
+          FOR UPDATE
+        `;
+
+        const client =
+          await tx.client.findUnique({
+            where: {
+              id: clientId,
+            },
+          });
+
+        if (
+          !client ||
+          client.status !==
+            'ACTIVE'
+        ) {
+          throw new DomainError(
+            'CLIENT_NOT_FOUND',
+            'Client introuvable.',
+            404,
+          );
+        }
+
+        const active =
+          await tx.qRCode.findFirst({
+            where: {
+              clientId,
+              status: 'ACTIVE',
+            },
+          });
+
+        if (active) {
+          throw new DomainError(
+            'ACTIVE_QR_ALREADY_EXISTS',
+            'Ce client possède déjà un QR Code actif. Utilisez Remplacer.',
+            409,
+          );
+        }
+
+        const token =
+          newQrToken();
+
+        const code =
+          await tx.qRCode.create({
+            data: {
+              clientId,
+
+              tokenHash:
+                tokenHash(token),
+
+              history: {
+                create: {
+                  action:
+                    'ISSUED',
+
+                  actorId,
+                },
+              },
+            },
+          });
+
+        await audit(
+          tx,
+          actorId,
+          'QR_ISSUED',
+          'QRCode',
+          code.id,
+          {
+            clientId,
+          },
+        );
+
+        return {
+          token,
+
+          qrCode: {
+            id: code.id,
+
+            status:
+              code.status,
+
+            issuedAt:
+              code.issuedAt,
+          },
+        };
+      },
+    );
+  }
+
+  replaceQr(
+    clientId: string,
+    key:
+      | string
+      | undefined,
+    actorId: string,
+  ) {
+    uuid.parse(clientId);
+
+    return mutate(
+      this.prisma,
+      'qr.replace',
+      key,
+      actorId,
+      {
+        clientId,
+      },
+
+      async (tx) => {
+        await tx.$queryRaw`
+          SELECT id
+          FROM "Client"
+          WHERE id = ${clientId}::uuid
+          FOR UPDATE
+        `;
+
+        const client =
+          await tx.client.findUnique({
+            where: {
+              id: clientId,
+            },
+          });
+
+        if (
+          !client ||
+          client.status !==
+            'ACTIVE'
+        ) {
+          throw new DomainError(
+            'CLIENT_NOT_FOUND',
+            'Client introuvable.',
+            404,
+          );
+        }
+
+        const active =
+          await tx.qRCode.findMany({
+            where: {
+              clientId,
+              status: 'ACTIVE',
+            },
+
+            orderBy: {
+              issuedAt:
+                'desc',
+            },
+          });
+
+        if (!active.length) {
+          throw new DomainError(
+            'NO_ACTIVE_QR',
+            'Ce client ne possède aucun QR Code actif. Utilisez Émettre.',
+            409,
+          );
+        }
+
+        const token =
+          newQrToken();
+
+        const newCode =
+          await tx.qRCode.create({
+            data: {
+              clientId,
+
+              tokenHash:
+                tokenHash(token),
+
+              history: {
+                create: {
+                  action:
+                    'ISSUED',
+
+                  actorId,
+                },
+              },
+            },
+          });
+
+        for (
+          let index = 0;
+          index <
+          active.length;
+          index++
+        ) {
+          const old =
+            active[index];
+
+          await tx.qRCode.update({
+            where: {
+              id: old.id,
+            },
+
+            data: {
+              status:
+                'REPLACED',
+
+              revokedAt:
+                new Date(),
+
+              ...(index === 0
+                ? {
+                    replacedById:
+                      newCode.id,
+                  }
+                : {}),
+
+              history: {
+                create: {
+                  action:
+                    'REPLACED',
+
+                  actorId,
+
+                  metadata: {
+                    replacedById:
+                      newCode.id,
+                  },
+                },
+              },
+            },
+          });
+        }
+
+        await audit(
+          tx,
+          actorId,
+          'QR_REPLACED',
+          'QRCode',
+          newCode.id,
+          {
+            clientId,
+
+            replaced:
+              active.map(
+                (item) =>
+                  item.id,
+              ),
+          },
+        );
+
+        return {
+          token,
+
+          qrCode: {
+            id:
+              newCode.id,
+
+            status:
+              newCode.status,
+
+            issuedAt:
+              newCode.issuedAt,
+          },
+        };
+      },
+    );
+  }
+
+  revokeQr(
+    clientId: string,
+    qrCodeId: string,
+    key:
+      | string
+      | undefined,
+    actorId: string,
+  ) {
+    uuid.parse(clientId);
+    uuid.parse(qrCodeId);
+
+    return mutate(
+      this.prisma,
+      'qr.revoke',
+      key,
+      actorId,
+      {
+        clientId,
+        qrCodeId,
+      },
+
+      async (tx) => {
+        await tx.$queryRaw`
+          SELECT id
+          FROM "QRCode"
+          WHERE id = ${qrCodeId}::uuid
+          FOR UPDATE
+        `;
+
+        const code =
+          await tx.qRCode.findUnique({
+            where: {
+              id: qrCodeId,
+            },
+          });
+
+        if (
+          !code ||
+          code.clientId !==
+            clientId
+        ) {
+          throw new DomainError(
+            'QR_NOT_FOUND',
+            'QR Code introuvable.',
+            404,
+          );
+        }
+
+        if (
+          code.status !==
+          'ACTIVE'
+        ) {
+          throw new DomainError(
+            'QR_ALREADY_INACTIVE',
+            'Ce QR Code est déjà inactif.',
+            409,
+          );
+        }
+
+        const revoked =
+          await tx.qRCode.update({
+            where: {
+              id: qrCodeId,
+            },
+
+            data: {
+              status:
+                'REVOKED',
+
+              revokedAt:
+                new Date(),
+
+              history: {
+                create: {
+                  action:
+                    'REVOKED',
+
+                  actorId,
+                },
+              },
+            },
+          });
+
+        await audit(
+          tx,
+          actorId,
+          'QR_REVOKED',
+          'QRCode',
+          qrCodeId,
+          {
+            clientId,
+          },
+        );
+
+        return revoked;
+      },
+    );
+  }
+
+  archive(
+    clientId: string,
+    key:
+      | string
+      | undefined,
+    actorId: string,
+  ) {
+    uuid.parse(clientId);
+
+    return mutate(
+      this.prisma,
+      'clients.archive',
+      key,
+      actorId,
+      {
+        clientId,
+      },
+
+      async (tx) => {
+        const client =
+          await tx.client.findUnique({
+            where: {
+              id: clientId,
+            },
+          });
+
+        if (!client) {
+          throw new DomainError(
+            'CLIENT_NOT_FOUND',
+            'Client introuvable.',
+            404,
+          );
+        }
+
+        const activeCodes =
+          await tx.qRCode.findMany({
+            where: {
+              clientId,
+
+              status:
+                'ACTIVE',
+            },
+          });
+
+        await tx.client.update({
+          where: {
+            id: clientId,
+          },
+
+          data: {
+            status:
+              'ARCHIVED',
+          },
+        });
+
+        for (
+          const code
+          of activeCodes
+        ) {
+          await tx.qRCode.update({
+            where: {
+              id: code.id,
+            },
+
+            data: {
+              status:
+                'REVOKED',
+
+              revokedAt:
+                new Date(),
+
+              history: {
+                create: {
+                  action:
+                    'REVOKED_CLIENT_ARCHIVED',
+
+                  actorId,
+                },
+              },
+            },
+          });
+        }
+
+        await audit(
+          tx,
+          actorId,
+          'CLIENT_ARCHIVED',
+          'Client',
+          clientId,
+        );
+
+        return {
+          id: clientId,
+
+          status:
+            'ARCHIVED',
+        };
+      },
+    );
+  }
+
+  merge(
+    sourceClientId: string,
+    input: unknown,
+    key:
+      | string
+      | undefined,
+    actorId: string,
+  ) {
+    uuid.parse(
+      sourceClientId,
+    );
+
+    const {
+      targetClientId,
+    } =
+      mergeSchema.parse(input);
+
+    if (
+      sourceClientId ===
+      targetClientId
+    ) {
+      throw new DomainError(
+        'INVALID_MERGE',
+        'Une fiche ne peut pas être fusionnée avec elle-même.',
+        400,
+      );
+    }
+
+    return mutate(
+      this.prisma,
+      'clients.merge',
+      key,
+      actorId,
+      {
+        sourceClientId,
+        targetClientId,
+      },
+
+      async (tx) => {
+        const [
+          source,
+          target,
+        ] =
+          await Promise.all([
+            tx.client.findUnique({
+              where: {
+                id:
+                  sourceClientId,
+              },
+            }),
+
+            tx.client.findUnique({
+              where: {
+                id:
+                  targetClientId,
+              },
+            }),
+          ]);
+
+        if (
+          !source ||
+          !target
+        ) {
+          throw new DomainError(
+            'CLIENT_NOT_FOUND',
+            'Une des fiches client est introuvable.',
+            404,
+          );
+        }
+
+        if (
+          target.status !==
+          'ACTIVE'
+        ) {
+          throw new DomainError(
+            'MERGE_TARGET_INACTIVE',
+            'La fiche cible doit être active.',
+            409,
+          );
+        }
+
+        if (
+          source.mergedIntoId
+        ) {
+          throw new DomainError(
+            'CLIENT_ALREADY_MERGED',
+            'Cette fiche a déjà été fusionnée.',
+            409,
+          );
+        }
+
+        const activeCodes =
+          await tx.qRCode.findMany({
+            where: {
+              clientId:
+                sourceClientId,
+
+              status:
+                'ACTIVE',
+            },
+          });
+
+        await tx.client.update({
+          where: {
+            id:
+              sourceClientId,
+          },
+
+          data: {
+            status:
+              'ARCHIVED',
+
+            mergedIntoId:
+              targetClientId,
+          },
+        });
+
+        for (
+          const code
+          of activeCodes
+        ) {
+          await tx.qRCode.update({
+            where: {
+              id: code.id,
+            },
+
+            data: {
+              status:
+                'REVOKED',
+
+              revokedAt:
+                new Date(),
+
+              history: {
+                create: {
+                  action:
+                    'REVOKED_CLIENT_MERGED',
+
+                  actorId,
+
+                  metadata: {
+                    targetClientId,
+                  },
+                },
+              },
+            },
+          });
+        }
+
+        await audit(
+          tx,
+          actorId,
+          'CLIENT_MERGED',
+          'Client',
+          sourceClientId,
+          {
+            targetClientId,
+          },
+        );
+
+        return {
+          sourceClientId,
+
+          targetClientId,
+        };
+      },
+    );
   }
 }
+
 @Controller('clients')
 export class ClientsController {
-  constructor(private readonly clients: ClientsService, private readonly prisma: PrismaService) {}
-  @Require('clients.create') @Post() create(@Body() body: unknown, @Headers('idempotency-key') key: string | undefined, @Req() req: AuthRequest) { return this.clients.create(body, key, req.actor.id).then(data => ({ success: true, data })); }
-  @Require('clients.read') @Get() async list(@Query() query: unknown) { return { success: true, ...(await this.clients.find(query)) }; }
-  @Require('clients.read') @Get('categories') async categories() { return { success: true, data: await this.prisma.clientCategory.findMany({ where: { active: true } }) }; }
-  @Require('meal.validate') @Post('scan') async scan(@Body() body: unknown) { return { success: true, data: await this.clients.byQr(body) }; }
-  @Require('clients.update') @Post(':id/qr') qr(@Param('id') id: string, @Headers('idempotency-key') key: string | undefined, @Req() req: AuthRequest) { return this.clients.replaceQr(id, key, req.actor.id).then(data => ({ success: true, data })); }
+  constructor(
+    private readonly clients:
+      ClientsService,
+
+    private readonly prisma:
+      PrismaService,
+  ) {}
+
+  @Require('clients.create')
+  @Post()
+  create(
+    @Body()
+    body: unknown,
+
+    @Headers(
+      'idempotency-key',
+    )
+    key:
+      | string
+      | undefined,
+
+    @Req()
+    req: AuthRequest,
+  ) {
+    return this.clients
+      .create(
+        body,
+        key,
+        req.actor.id,
+      )
+      .then(
+        (data) => ({
+          success: true,
+          data,
+        }),
+      );
+  }
+
+  @Require('clients.read')
+  @Get()
+  async list(
+    @Query()
+    query: unknown,
+  ) {
+    return {
+      success: true,
+
+      ...(await this.clients.find(
+        query,
+      )),
+    };
+  }
+
+  @Require('clients.read')
+  @Get('categories')
+  async categories() {
+    return {
+      success: true,
+
+      data:
+        await this.prisma.clientCategory.findMany(
+          {
+            where: {
+              active: true,
+            },
+
+            orderBy: {
+              label: 'asc',
+            },
+          },
+        ),
+    };
+  }
+
+  @Require('meal.validate')
+  @Post('scan')
+  async scan(
+    @Body()
+    body: unknown,
+
+    @Req()
+    req: AuthRequest,
+  ) {
+    return {
+      success: true,
+
+      data:
+        await this.clients.byQr(
+          body,
+          req.actor.id,
+        ),
+    };
+  }
+
+  @Require('clients.read')
+  @Get(':id')
+  async detail(
+    @Param('id')
+    id: string,
+  ) {
+    return {
+      success: true,
+
+      data:
+        await this.clients.detail(
+          id,
+        ),
+    };
+  }
+
+  @Require('clients.update')
+  @Post(':id')
+  update(
+    @Param('id')
+    id: string,
+
+    @Body()
+    body: unknown,
+
+    @Headers(
+      'idempotency-key',
+    )
+    key:
+      | string
+      | undefined,
+
+    @Req()
+    req: AuthRequest,
+  ) {
+    return this.clients
+      .update(
+        id,
+        body,
+        key,
+        req.actor.id,
+      )
+      .then(
+        (data) => ({
+          success: true,
+          data,
+        }),
+      );
+  }
+
+  @Require('meal.validate')
+  @Post(':id/control')
+  async control(
+    @Param('id')
+    id: string,
+
+    @Req()
+    req: AuthRequest,
+  ) {
+    return {
+      success: true,
+
+      data:
+        await this.clients.controlCard(
+          id,
+          req.actor.id,
+          'MANUAL_SEARCH',
+        ),
+    };
+  }
+
+  @Require('clients.update')
+  @Post(':id/qr/issue')
+  issueQr(
+    @Param('id')
+    id: string,
+
+    @Headers(
+      'idempotency-key',
+    )
+    key:
+      | string
+      | undefined,
+
+    @Req()
+    req: AuthRequest,
+  ) {
+    return this.clients
+      .issueQr(
+        id,
+        key,
+        req.actor.id,
+      )
+      .then(
+        (data) => ({
+          success: true,
+          data,
+        }),
+      );
+  }
+
+  @Require('clients.update')
+  @Post(':id/qr/replace')
+  replaceQr(
+    @Param('id')
+    id: string,
+
+    @Headers(
+      'idempotency-key',
+    )
+    key:
+      | string
+      | undefined,
+
+    @Req()
+    req: AuthRequest,
+  ) {
+    return this.clients
+      .replaceQr(
+        id,
+        key,
+        req.actor.id,
+      )
+      .then(
+        (data) => ({
+          success: true,
+          data,
+        }),
+      );
+  }
+
+  @Require('clients.update')
+  @Post(':id/qr/:qrCodeId/revoke')
+  revokeQr(
+    @Param('id')
+    id: string,
+
+    @Param('qrCodeId')
+    qrCodeId: string,
+
+    @Headers(
+      'idempotency-key',
+    )
+    key:
+      | string
+      | undefined,
+
+    @Req()
+    req: AuthRequest,
+  ) {
+    return this.clients
+      .revokeQr(
+        id,
+        qrCodeId,
+        key,
+        req.actor.id,
+      )
+      .then(
+        (data) => ({
+          success: true,
+          data,
+        }),
+      );
+  }
+
+  // Compatibilité temporaire avec l'ancien écran
+  @Require('clients.update')
+  @Post(':id/qr')
+  async legacyQr(
+    @Param('id')
+    id: string,
+
+    @Headers(
+      'idempotency-key',
+    )
+    key:
+      | string
+      | undefined,
+
+    @Req()
+    req: AuthRequest,
+  ) {
+    const detail =
+      await this.clients.detail(
+        id,
+      );
+
+    const hasActive =
+      detail.qrCodes.some(
+        (code) =>
+          code.status ===
+          'ACTIVE',
+      );
+
+    const data =
+      hasActive
+        ? await this.clients.replaceQr(
+            id,
+            key,
+            req.actor.id,
+          )
+        : await this.clients.issueQr(
+            id,
+            key,
+            req.actor.id,
+          );
+
+    return {
+      success: true,
+      data,
+    };
+  }
+
+  @Require('clients.archive')
+  @Post(':id/archive')
+  archive(
+    @Param('id')
+    id: string,
+
+    @Headers(
+      'idempotency-key',
+    )
+    key:
+      | string
+      | undefined,
+
+    @Req()
+    req: AuthRequest,
+  ) {
+    return this.clients
+      .archive(
+        id,
+        key,
+        req.actor.id,
+      )
+      .then(
+        (data) => ({
+          success: true,
+          data,
+        }),
+      );
+  }
+
+  @Require('clients.merge')
+  @Post(':id/merge')
+  merge(
+    @Param('id')
+    id: string,
+
+    @Body()
+    body: unknown,
+
+    @Headers(
+      'idempotency-key',
+    )
+    key:
+      | string
+      | undefined,
+
+    @Req()
+    req: AuthRequest,
+  ) {
+    return this.clients
+      .merge(
+        id,
+        body,
+        key,
+        req.actor.id,
+      )
+      .then(
+        (data) => ({
+          success: true,
+          data,
+        }),
+      );
+  }
 }
