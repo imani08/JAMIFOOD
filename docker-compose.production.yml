@@ -1,0 +1,4 @@
+services:
+  postgres: { ports: !reset [] }
+  api: { restart: unless-stopped }
+  web: { restart: unless-stopped }

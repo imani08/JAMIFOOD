@@ -1,0 +1,5 @@
+'use client';
+import {useState} from 'react';
+import {Heading,Loading,useData} from '../../components/common';
+import {date} from '../../lib/api';
+export default function Audit(){const [page,setPage]=useState(1);const q=useData<{id:string;action:string;entityType:string;entityId:string;actorId:string;createdAt:string;requestId:string}[]>('/audit?page='+page);return <><Heading title="Journal d’audit" subtitle="Historique des opérations sensibles, conservé sans réécriture."/><Loading loading={q.isLoading} error={q.error}/><section className="card table-wrap"><table><thead><tr><th>Horodatage</th><th>Action</th><th>Objet</th><th>Auteur</th></tr></thead><tbody>{q.data?.map(r=><tr key={r.id}><td>{date(r.createdAt)}</td><td>{r.action}</td><td>{r.entityType}<br/><small>{r.entityId}</small></td><td>{r.actorId}</td></tr>)}</tbody></table></section><div className="actions"><button className="secondary" disabled={page===1} onClick={()=>setPage(page-1)}>Précédent</button><span>Page {page}</span><button className="secondary" disabled={(q.data?.length??0)<25} onClick={()=>setPage(page+1)}>Suivant</button></div></>;}

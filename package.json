@@ -1,0 +1,16 @@
+{
+  "name": "jami-food",
+  "private": true,
+  "packageManager": "pnpm@10.18.2",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --parallel",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "db:generate": "pnpm --filter @jami/database generate",
+    "db:migrate": "pnpm --filter @jami/database migrate",
+    "db:seed": "pnpm --filter @jami/database seed"
+  },
+  "devDependencies": { "turbo": "^2.5.6" }
+}

@@ -1,0 +1,774 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+  LOCKED
+}
+
+enum ClientStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum QRCodeStatus {
+  ACTIVE
+  REVOKED
+  REPLACED
+  EXPIRED
+}
+
+enum SubscriptionStatus {
+  PENDING_PAYMENT
+  SCHEDULED
+  ACTIVE
+  SUSPENDED
+  EXPIRED
+  CANCELLED
+}
+
+enum MealRightStatus {
+  AVAILABLE
+  RESERVED
+  CONSUMED
+  CANCELLED
+}
+
+enum OrderStatus {
+  RECEIVED
+  CONFIRMED
+  PREPARING
+  READY
+  SERVED
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+enum Currency {
+  USD
+  CDF
+}
+
+enum ServiceMode {
+  DINE_IN
+  TAKEAWAY
+  DELIVERY
+}
+
+enum CashSessionStatus {
+  OPEN
+  COUNTING
+  CLOSED
+  VALIDATED
+}
+
+enum SyncStatus {
+  PENDING
+  SYNCING
+  SYNCED
+  CONFLICT
+  REJECTED
+}
+
+enum PriceStatus {
+  SCHEDULED
+  ACTIVE
+  RETIRED
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  username     String     @unique
+  email        String?    @unique
+  firstName    String
+  lastName     String
+  phone        String?
+  passwordHash String
+  status       UserStatus @default(ACTIVE)
+  lastLoginAt  DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  roles        UserRole[]
+  sessions     Session[]
+  auditLogs    AuditLog[]
+}
+
+model Role {
+  id          String           @id @default(uuid()) @db.Uuid
+  code        String           @unique
+  label       String
+  users       UserRole[]
+  permissions RolePermission[]
+}
+
+model Permission {
+  id    String           @id @default(uuid()) @db.Uuid
+  code  String           @unique
+  label String
+  roles RolePermission[]
+}
+
+model UserRole {
+  userId String @db.Uuid
+  roleId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@id([userId, roleId])
+}
+
+model RolePermission {
+  roleId       String     @db.Uuid
+  permissionId String     @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Restrict)
+
+  @@id([roleId, permissionId])
+}
+
+model Session {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @db.Uuid
+  tokenHash      String   @unique
+  expiresAt      DateTime
+  lastActivityAt DateTime
+  createdAt      DateTime @default(now())
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  actorId    String?  @db.Uuid
+  action     String
+  entityType String
+  entityId   String?
+  oldValue   Json?
+  newValue   Json?
+  metadata   Json?
+  ip         String?
+  deviceId   String?
+  requestId  String   @default(uuid())
+  createdAt  DateTime @default(now())
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+  @@index([createdAt])
+}
+
+model IdempotencyRecord {
+  id             String   @id @default(uuid()) @db.Uuid
+  scope          String
+  key            String
+  requestHash    String
+  responseStatus Int
+  responseBody   Json
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  @@unique([scope, key])
+  @@index([expiresAt])
+}
+
+model ClientCategory {
+  id      String   @id @default(uuid()) @db.Uuid
+  code    String   @unique
+  label   String
+  active  Boolean  @default(true)
+  clients Client[]
+}
+
+model Client {
+  id                    String         @id @default(uuid()) @db.Uuid
+  categoryId            String         @db.Uuid
+  firstName             String
+  lastName              String
+  ulcNumber             String?        @unique
+  faculty               String?
+  promotion             String?
+  residency             String?
+  phone                 String?
+  email                 String?
+  photoObjectKey        String?
+  dietaryNotesEncrypted String?
+  status                ClientStatus   @default(ACTIVE)
+  mergedIntoId          String?        @db.Uuid
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+  category              ClientCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  subscriptions         Subscription[]
+  orders                Order[]
+  qrCodes               QRCode[]
+
+  @@index([lastName, firstName])
+  @@index([phone])
+}
+
+model QRCode {
+  id           String          @id @default(uuid()) @db.Uuid
+  clientId     String          @db.Uuid
+  tokenHash    String          @unique
+  status       QRCodeStatus    @default(ACTIVE)
+  issuedAt     DateTime        @default(now())
+  revokedAt    DateTime?
+  replacedById String?         @unique @db.Uuid
+  client       Client          @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  history      QRCodeHistory[]
+
+  @@index([clientId, status])
+}
+
+model QRCodeHistory {
+  id        String   @id @default(uuid()) @db.Uuid
+  qrCodeId  String   @db.Uuid
+  action    String
+  actorId   String?  @db.Uuid
+  metadata  Json?
+  createdAt DateTime @default(now())
+  qrCode    QRCode   @relation(fields: [qrCodeId], references: [id], onDelete: Restrict)
+}
+
+model SubscriptionPlan {
+  id       String                    @id @default(uuid()) @db.Uuid
+  code     String                    @unique
+  name     String
+  active   Boolean                   @default(true)
+  versions SubscriptionPlanVersion[]
+}
+
+model SubscriptionPlanVersion {
+  id               String           @id @default(uuid()) @db.Uuid
+  planId           String           @db.Uuid
+  version          Int
+  price            Decimal          @db.Decimal(18, 2)
+  currency         Currency
+  services         Json
+  eligibilityDays  Json
+  quotaRules       Json
+  deliveryIncluded Boolean          @default(false)
+  effectiveFrom    DateTime
+  effectiveTo      DateTime?
+  status           PriceStatus      @default(SCHEDULED)
+  plan             SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+  subscriptions    Subscription[]
+
+  @@unique([planId, version])
+  @@index([planId, effectiveFrom])
+}
+
+model Subscription {
+  payments         Payment[]
+  id               String                  @id @default(uuid()) @db.Uuid
+  clientId         String                  @db.Uuid
+  planVersionId    String                  @db.Uuid
+  status           SubscriptionStatus      @default(PENDING_PAYMENT)
+  startsOn         DateTime                @db.Date
+  endsOn           DateTime                @db.Date
+  amount           Decimal                 @db.Decimal(18, 2)
+  currency         Currency
+  paidAmount       Decimal                 @default(0) @db.Decimal(18, 2)
+  balance          Decimal                 @db.Decimal(18, 2)
+  serviceSnapshot  Json
+  deliveryIncluded Boolean                 @default(false)
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  client           Client                  @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  planVersion      SubscriptionPlanVersion @relation(fields: [planVersionId], references: [id], onDelete: Restrict)
+  rights           MealRight[]
+
+  @@index([clientId, status])
+  @@index([status, startsOn, endsOn])
+}
+
+model MealRight {
+  id             String           @id @default(uuid()) @db.Uuid
+  subscriptionId String           @db.Uuid
+  businessDate   DateTime         @db.Date
+  serviceCode    String
+  quotaGroup     String           @default("MAIN")
+  status         MealRightStatus  @default(AVAILABLE)
+  reservedAt     DateTime?
+  consumedAt     DateTime?
+  subscription   Subscription     @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  consumption    MealConsumption?
+  reservation    MealReservation?
+
+  @@unique([subscriptionId, businessDate, serviceCode, quotaGroup])
+  @@index([status, businessDate, serviceCode])
+}
+
+model MealConsumption {
+  id             String    @id @default(uuid()) @db.Uuid
+  mealRightId    String    @unique @db.Uuid
+  orderId        String?   @unique @db.Uuid
+  servedById     String    @db.Uuid
+  idempotencyKey String    @unique
+  consumedAt     DateTime  @default(now())
+  mealRight      MealRight @relation(fields: [mealRightId], references: [id], onDelete: Restrict)
+  order          Order?    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+}
+
+model MealReservation {
+  id           String    @id @default(uuid()) @db.Uuid
+  mealRightId  String    @unique @db.Uuid
+  orderId      String    @unique @db.Uuid
+  expiresAt    DateTime?
+  reservedById String    @db.Uuid
+  mealRight    MealRight @relation(fields: [mealRightId], references: [id], onDelete: Restrict)
+  order        Order     @relation(fields: [orderId], references: [id], onDelete: Restrict)
+}
+
+model ProductCategory {
+  id       String    @id @default(uuid()) @db.Uuid
+  code     String    @unique
+  label    String
+  products Product[]
+}
+
+model Product {
+  id         String          @id @default(uuid()) @db.Uuid
+  categoryId String          @db.Uuid
+  sku        String?         @unique
+  name       String
+  active     Boolean         @default(true)
+  category   ProductCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  prices     ProductPrice[]
+  orderItems OrderItem[]
+}
+
+model ProductPrice {
+  categoryCode String         @default("ETUDIANT_EXTERNE")
+  id           String         @id @default(uuid()) @db.Uuid
+  productId    String         @db.Uuid
+  product      Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  versions     PriceVersion[]
+}
+
+model PriceVersion {
+  id             String       @id @default(uuid()) @db.Uuid
+  productPriceId String       @db.Uuid
+  version        Int
+  amount         Decimal      @db.Decimal(18, 2)
+  currency       Currency
+  effectiveFrom  DateTime
+  effectiveTo    DateTime?
+  status         PriceStatus  @default(SCHEDULED)
+  productPrice   ProductPrice @relation(fields: [productPriceId], references: [id], onDelete: Restrict)
+
+  @@unique([productPriceId, version])
+  @@index([productPriceId, effectiveFrom])
+}
+
+model Order {
+  id              String               @id @default(uuid()) @db.Uuid
+  number          String               @unique
+  clientId        String?              @db.Uuid
+  serviceMode     ServiceMode
+  status          OrderStatus          @default(RECEIVED)
+  businessDate    DateTime             @db.Date
+  paymentRequired Boolean              @default(true)
+  ticketTokenHash String?              @unique
+  totalAmount     Decimal              @db.Decimal(18, 2)
+  currency        Currency
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  client          Client?              @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  items           OrderItem[]
+  payments        Payment[]
+  statusHistory   OrderStatusHistory[]
+  kitchenTicket   KitchenTicket?
+  delivery        Delivery?
+  mealConsumption MealConsumption?
+  reservation     MealReservation?
+
+  @@index([status, createdAt])
+  @@index([clientId, createdAt])
+}
+
+model OrderItem {
+  id                  String   @id @default(uuid()) @db.Uuid
+  orderId             String   @db.Uuid
+  productId           String?  @db.Uuid
+  quantity            Decimal  @db.Decimal(18, 3)
+  unitPrice           Decimal  @db.Decimal(18, 2)
+  lineTotal           Decimal  @db.Decimal(18, 2)
+  productSnapshot     Json
+  variantsSnapshot    Json?
+  supplementsSnapshot Json?
+  order               Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  product             Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+}
+
+model OrderStatusHistory {
+  id         String       @id @default(uuid()) @db.Uuid
+  orderId    String       @db.Uuid
+  fromStatus OrderStatus?
+  toStatus   OrderStatus
+  reason     String?
+  actorId    String?      @db.Uuid
+  createdAt  DateTime     @default(now())
+  order      Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([orderId, createdAt])
+}
+
+model KitchenTicket {
+  id               String              @id @default(uuid()) @db.Uuid
+  orderId          String              @unique @db.Uuid
+  number           String              @unique
+  renderedSnapshot Json
+  issuedAt         DateTime            @default(now())
+  order            Order               @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  items            KitchenTicketItem[]
+}
+
+model KitchenTicketItem {
+  id                  String        @id @default(uuid()) @db.Uuid
+  kitchenTicketId     String        @db.Uuid
+  quantity            Decimal       @db.Decimal(18, 3)
+  preparationSnapshot Json
+  kitchenTicket       KitchenTicket @relation(fields: [kitchenTicketId], references: [id], onDelete: Restrict)
+}
+
+model Delivery {
+  id               String    @id @default(uuid()) @db.Uuid
+  orderId          String    @unique @db.Uuid
+  courierId        String?   @db.Uuid
+  addressSnapshot  Json
+  status           String
+  deliveryCodeHash String?
+  assignedAt       DateTime?
+  deliveredAt      DateTime?
+  failureReason    String?
+  order            Order     @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([courierId, status])
+}
+
+model ExchangeRate {
+  id            String      @id @default(uuid()) @db.Uuid
+  baseCurrency  Currency
+  quoteCurrency Currency
+  rate          Decimal     @db.Decimal(20, 8)
+  effectiveFrom DateTime
+  source        String
+  status        PriceStatus @default(SCHEDULED)
+  createdById   String      @db.Uuid
+
+  @@unique([baseCurrency, quoteCurrency, effectiveFrom])
+  @@index([baseCurrency, quoteCurrency, effectiveFrom])
+}
+
+model Payment {
+  subscriptionId       String?            @db.Uuid
+  subscription         Subscription?      @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  cashSessionId        String             @db.Uuid
+  cashSession          CashSession        @relation(fields: [cashSessionId], references: [id], onDelete: Restrict)
+  id                   String             @id @default(uuid()) @db.Uuid
+  orderId              String?            @db.Uuid
+  status               PaymentStatus      @default(PENDING)
+  method               String
+  operator             String?
+  referenceCurrency    Currency
+  amountDue            Decimal            @db.Decimal(18, 2)
+  receivedAmount       Decimal            @db.Decimal(18, 2)
+  receivedCurrency     Currency
+  exchangeRateSnapshot Decimal?           @db.Decimal(20, 8)
+  changeAmount         Decimal            @default(0) @db.Decimal(18, 2)
+  changeCurrency       Currency?
+  externalReference    String?
+  confirmedAt          DateTime?
+  confirmedById        String?            @db.Uuid
+  idempotencyKey       String             @unique
+  createdAt            DateTime           @default(now())
+  order                Order?             @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  references           PaymentReference[]
+  movements            CashMovement[]
+
+  @@index([orderId, status])
+  @@index([externalReference])
+}
+
+model PaymentReference {
+  id        String  @id @default(uuid()) @db.Uuid
+  paymentId String  @db.Uuid
+  operator  String
+  reference String
+  payment   Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@unique([operator, reference])
+}
+
+model CashRegister {
+  id       String        @id @default(uuid()) @db.Uuid
+  code     String        @unique
+  label    String
+  active   Boolean       @default(true)
+  sessions CashSession[]
+}
+
+model CashSession {
+  payments       Payment[]
+  id             String            @id @default(uuid()) @db.Uuid
+  cashRegisterId String            @db.Uuid
+  cashierId      String            @db.Uuid
+  status         CashSessionStatus @default(OPEN)
+  openedAt       DateTime          @default(now())
+  closedAt       DateTime?
+  openingUsd     Decimal           @default(0) @db.Decimal(18, 2)
+  openingCdf     Decimal           @default(0) @db.Decimal(18, 2)
+  cashRegister   CashRegister      @relation(fields: [cashRegisterId], references: [id], onDelete: Restrict)
+  movements      CashMovement[]
+  closing        CashClosing?
+
+  @@index([cashRegisterId, status])
+  @@index([cashierId, status])
+}
+
+model CashMovement {
+  id            String      @id @default(uuid()) @db.Uuid
+  cashSessionId String      @db.Uuid
+  paymentId     String?     @db.Uuid
+  type          String
+  amount        Decimal     @db.Decimal(18, 2)
+  currency      Currency
+  occurredAt    DateTime    @default(now())
+  sourceType    String
+  sourceId      String
+  cashSession   CashSession @relation(fields: [cashSessionId], references: [id], onDelete: Restrict)
+  payment       Payment?    @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@unique([sourceType, sourceId, type, currency])
+  @@index([cashSessionId, occurredAt])
+}
+
+model CashClosing {
+  id                  String      @id @default(uuid()) @db.Uuid
+  cashSessionId       String      @unique @db.Uuid
+  status              String
+  countedUsd          Decimal     @db.Decimal(18, 2)
+  countedCdf          Decimal     @db.Decimal(18, 2)
+  theoreticalSnapshot Json
+  varianceSnapshot    Json
+  submittedAt         DateTime    @default(now())
+  validatedAt         DateTime?
+  validatedById       String?     @db.Uuid
+  cashSession         CashSession @relation(fields: [cashSessionId], references: [id], onDelete: Restrict)
+}
+
+model ExpenseCategory {
+  id       String    @id @default(uuid()) @db.Uuid
+  code     String    @unique
+  label    String
+  expenses Expense[]
+}
+
+model Expense {
+  id               String          @id @default(uuid()) @db.Uuid
+  categoryId       String          @db.Uuid
+  cashSessionId    String?         @db.Uuid
+  beneficiary      String
+  reason           String
+  amount           Decimal         @db.Decimal(18, 2)
+  currency         Currency
+  paymentMethod    String
+  receiptObjectKey String?
+  authorizedById   String?         @db.Uuid
+  createdById      String          @db.Uuid
+  occurredAt       DateTime        @default(now())
+  category         ExpenseCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@index([occurredAt])
+  @@index([categoryId, occurredAt])
+}
+
+model Device {
+  id             String          @id @default(uuid()) @db.Uuid
+  deviceKey      String          @unique
+  name           String
+  type           String
+  active         Boolean         @default(true)
+  lastSeenAt     DateTime?
+  syncOperations SyncOperation[]
+}
+
+model SyncOperation {
+  id             String     @id @default(uuid()) @db.Uuid
+  operationUuid  String     @unique
+  deviceId       String     @db.Uuid
+  actorId        String?    @db.Uuid
+  type           String
+  payload        Json
+  idempotencyKey String
+  status         SyncStatus @default(PENDING)
+  conflict       Json?
+  occurredAt     DateTime
+  syncedAt       DateTime?
+  device         Device     @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+
+  @@unique([deviceId, idempotencyKey])
+  @@index([status, occurredAt])
+}
+
+model LoginAttempt {
+  key          String    @id
+  failures     Int       @default(0)
+  windowStart  DateTime  @default(now())
+  blockedUntil DateTime?
+}
+
+model Setting {
+  key         String   @id
+  value       Json
+  validated   Boolean  @default(false)
+  updatedById String?  @db.Uuid
+  updatedAt   DateTime @updatedAt
+}
+
+model StockItem {
+  id                String             @id @default(uuid()) @db.Uuid
+  code              String             @unique
+  name              String
+  unit              String
+  quantity          Decimal            @default(0) @db.Decimal(18, 3)
+  alertThreshold    Decimal            @default(0) @db.Decimal(18, 3)
+  active            Boolean            @default(true)
+  movements         StockMovement[]
+  conversions       UnitConversion[]
+  recipeIngredients RecipeIngredient[]
+}
+
+model UnitConversion {
+  id          String    @id @default(uuid()) @db.Uuid
+  stockItemId String    @db.Uuid
+  fromUnit    String
+  factor      Decimal   @db.Decimal(18, 6)
+  stockItem   StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+
+  @@unique([stockItemId, fromUnit])
+}
+
+model StockMovement {
+  id          String    @id @default(uuid()) @db.Uuid
+  stockItemId String    @db.Uuid
+  delta       Decimal   @db.Decimal(18, 3)
+  type        String
+  reason      String
+  sourceId    String
+  actorId     String    @db.Uuid
+  occurredAt  DateTime  @default(now())
+  stockItem   StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+
+  @@unique([stockItemId, type, sourceId])
+  @@index([stockItemId, occurredAt])
+}
+
+model Supplier {
+  id        String     @id @default(uuid()) @db.Uuid
+  name      String
+  phone     String?
+  purchases Purchase[]
+}
+
+model Purchase {
+  id         String            @id @default(uuid()) @db.Uuid
+  supplierId String            @db.Uuid
+  amount     Decimal           @db.Decimal(18, 2)
+  currency   Currency
+  paidAmount Decimal           @default(0) @db.Decimal(18, 2)
+  createdAt  DateTime          @default(now())
+  supplier   Supplier          @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  receipts   GoodsReceipt[]
+  payments   SupplierPayment[]
+}
+
+model GoodsReceipt {
+  id         String   @id @default(uuid()) @db.Uuid
+  purchaseId String   @db.Uuid
+  reference  String   @unique
+  lines      Json
+  receivedAt DateTime @default(now())
+  purchase   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+}
+
+model SupplierPayment {
+  id         String   @id @default(uuid()) @db.Uuid
+  purchaseId String   @db.Uuid
+  amount     Decimal  @db.Decimal(18, 2)
+  currency   Currency
+  actorId    String   @db.Uuid
+  createdAt  DateTime @default(now())
+  purchase   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+}
+
+model Recipe {
+  id       String          @id @default(uuid()) @db.Uuid
+  name     String
+  versions RecipeVersion[]
+}
+
+model RecipeVersion {
+  id            String             @id @default(uuid()) @db.Uuid
+  recipeId      String             @db.Uuid
+  version       Int
+  yieldQuantity Decimal            @db.Decimal(18, 3)
+  validated     Boolean            @default(false)
+  recipe        Recipe             @relation(fields: [recipeId], references: [id], onDelete: Restrict)
+  ingredients   RecipeIngredient[]
+  productions   Production[]
+
+  @@unique([recipeId, version])
+}
+
+model RecipeIngredient {
+  id              String        @id @default(uuid()) @db.Uuid
+  recipeVersionId String        @db.Uuid
+  stockItemId     String        @db.Uuid
+  quantity        Decimal       @db.Decimal(18, 3)
+  recipeVersion   RecipeVersion @relation(fields: [recipeVersionId], references: [id], onDelete: Restrict)
+  stockItem       StockItem     @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+
+  @@unique([recipeVersionId, stockItemId])
+}
+
+model Production {
+  id              String        @id @default(uuid()) @db.Uuid
+  recipeVersionId String        @db.Uuid
+  quantity        Decimal       @db.Decimal(18, 3)
+  actorId         String        @db.Uuid
+  producedAt      DateTime      @default(now())
+  recipeVersion   RecipeVersion @relation(fields: [recipeVersionId], references: [id], onDelete: Restrict)
+}
+
+model Inventory {
+  id            String    @id @default(uuid()) @db.Uuid
+  stockItemId   String    @db.Uuid
+  counted       Decimal   @db.Decimal(18, 3)
+  expected      Decimal   @db.Decimal(18, 3)
+  reason        String
+  createdById   String    @db.Uuid
+  validatedById String?   @db.Uuid
+  status        String    @default("PENDING")
+  createdAt     DateTime  @default(now())
+  validatedAt   DateTime?
+}

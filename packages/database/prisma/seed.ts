@@ -1,0 +1,42 @@
+import { PrismaClient } from '@prisma/client';
+import { randomBytes, scryptSync } from 'node:crypto';
+const db = new PrismaClient();
+async function main() {
+  if (process.env.NODE_ENV === 'production' || process.env.SEED_DEMO !== 'true' || !process.env.DEMO_PASSWORD || process.env.DEMO_PASSWORD.length < 12) throw new Error('Seed réservé à DEMO avec mot de passe externe de 12 caractères minimum.');
+  const rolePermissions: Record<string,string[]> = {
+    DIRECTION: ['users.read','users.create','users.update','users.disable','clients.read','clients.create','clients.update','clients.archive','clients.merge','subscriptions.read','subscriptions.create','subscriptions.suspend','subscriptions.cancel','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','cash.refund','cash.adjust','sales.create','sales.read','orders.create','orders.read','orders.cancel','meal.validate','meal.correct','meal.exception','kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','delivery.read','delivery.confirm','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory'],
+    RESPONSABLE_RESTAURANT: ['clients.read','clients.create','clients.update','subscriptions.read','subscriptions.create','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','sales.create','sales.read','orders.create','orders.read','meal.validate','kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','delivery.read','delivery.confirm','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory'],
+    CAISSIER: ['clients.read','clients.create','subscriptions.read','subscriptions.create','cash.open','cash.close','cash.read','sales.create','sales.read','orders.create','orders.read','meal.validate','pricing.read'],
+    CUISINE: ['kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve'],
+    GESTIONNAIRE_STOCK: ['stock.read','stock.inventory'], LIVREUR: ['delivery.read','delivery.confirm'], ADMIN_TECHNIQUE: ['users.read','users.create','users.update','users.disable'], CLIENT: []
+  };
+  for (const code of [...new Set(Object.values(rolePermissions).flat())]) await db.permission.upsert({where:{code},update:{},create:{code,label:code}});
+  for (const [code,permissions] of Object.entries(rolePermissions)) {
+    const role=await db.role.upsert({where:{code},update:{},create:{code,label:code}});
+    for (const permissionCode of permissions) {const permission=await db.permission.findUniqueOrThrow({where:{code:permissionCode}});await db.rolePermission.upsert({where:{roleId_permissionId:{roleId:role.id,permissionId:permission.id}},update:{},create:{roleId:role.id,permissionId:permission.id}});}
+  }
+  const salt=randomBytes(16).toString('hex'); const passwordHash='scrypt$'+salt+'$'+scryptSync(process.env.DEMO_PASSWORD,salt,64).toString('hex');
+  for (const [username,roleCode] of [['direction.demo','DIRECTION'],['caissier.demo','CAISSIER'],['cuisine.demo','CUISINE']]) {
+    const user=await db.user.upsert({where:{username},update:{},create:{username,firstName:roleCode,lastName:'DEMO',passwordHash}});
+    const role=await db.role.findUniqueOrThrow({where:{code:roleCode}});await db.userRole.upsert({where:{userId_roleId:{userId:user.id,roleId:role.id}},update:{},create:{userId:user.id,roleId:role.id}});
+  }
+  const admin=await db.user.findUniqueOrThrow({where:{username:'direction.demo'}});
+  for(const [code,label] of [['ETUDIANT_HOME','Étudiant résident Home'],['ETUDIANT_EXTERNE','Étudiant externe'],['PERSONNEL_ULC','Personnel ULC']]) await db.clientCategory.upsert({where:{code},update:{},create:{code,label}});
+  for(const [code,name,price,services] of [['PREMIUM','Premium intégral','140',['BREAKFAST','LUNCH','DINNER']],['COMBINEE','Combinée','110',['LUNCH','DINNER']],['REPAS','Repas','60',['MAIN']],['BREAKFAST','Petit-déjeuner','40',['BREAKFAST']]] as const) {
+    const plan=await db.subscriptionPlan.upsert({where:{code},update:{},create:{code,name}});
+    await db.subscriptionPlanVersion.upsert({where:{planId_version:{planId:plan.id,version:1}},update:{},create:{planId:plan.id,version:1,price,currency:'USD',services:[...services],eligibilityDays:[1,2,3,4,5,6],quotaRules:{pendingValidation:false,days:30,demo:true},effectiveFrom:new Date('2026-01-01'),status:'ACTIVE'}});
+  }
+  const category=await db.productCategory.upsert({where:{code:'DEMO'},update:{},create:{code:'DEMO',label:'Menu DEMO'}});
+  for(const [sku,name,price] of [['DEMO-REPAS','Repas étudiant complet','8000'],['DEMO-JUS','Jus du jour · DEMO','1700']]) {
+    const p=await db.product.upsert({where:{sku},update:{},create:{sku,name,categoryId:category.id}});
+    for(const categoryCode of ['ETUDIANT_HOME','ETUDIANT_EXTERNE','PERSONNEL_ULC']) {
+      if(!await db.productPrice.findFirst({where:{productId:p.id,categoryCode}})) await db.productPrice.create({data:{productId:p.id,categoryCode,versions:{create:{version:1,amount:sku==='DEMO-REPAS'&&categoryCode==='PERSONNEL_ULC'?'10000':price,currency:'CDF',effectiveFrom:new Date('2026-01-01'),status:'ACTIVE'}}}});
+    }
+  }
+  await db.exchangeRate.upsert({where:{baseCurrency_quoteCurrency_effectiveFrom:{baseCurrency:'USD',quoteCurrency:'CDF',effectiveFrom:new Date('2026-01-01')}},update:{},create:{baseCurrency:'USD',quoteCurrency:'CDF',rate:'2500',effectiveFrom:new Date('2026-01-01'),source:'DEMO — taux fictif de recette R07',status:'ACTIVE',createdById:admin.id}});
+  await db.cashRegister.upsert({where:{code:'DEMO-TPE-01'},update:{},create:{code:'DEMO-TPE-01',label:'Terminal de caisse DEMO'}});
+  for(const [code,label] of [['DENREES','Denrées'],['GAZ','Gaz'],['TRANSPORT','Transport'],['PERSONNEL','Personnel'],['ENTRETIEN','Entretien'],['EMBALLAGES','Emballages'],['EAU','Eau'],['ELECTRICITE','Électricité']]) await db.expenseCategory.upsert({where:{code},update:{},create:{code,label}});
+  for(const [key,value] of [['calendrier',{note:'Jours et services à valider en production'}],['livraison',{note:'Zones, frais et horaires à valider'}],['acompte',{enabled:false}],['report',{enabled:false}],['flex',{enabled:false}],['tpe',{note:'Modèle et fournisseur à confirmer'}]]) await db.setting.upsert({where:{key:key as string},update:{},create:{key:key as string,value}});
+  for(const [code,name,unit] of [['RIZ','Riz','kg'],['HUILE','Huile','litre'],['EAU','Bouteille d’eau','pièce']]) await db.stockItem.upsert({where:{code},update:{},create:{code,name,unit,alertThreshold:'5'}});
+}
+main().finally(()=>db.$disconnect());

@@ -1,0 +1,3 @@
+'use client';
+import {Heading,Loading,useData} from '../../components/common';
+export default function Users(){const q=useData<{id:string;username:string;firstName:string;lastName:string;status:string;roles:{role:{label:string}}[]}[]>('/users');return <><Heading title="Utilisateurs & habilitations" subtitle="Comptes individuels et séparation des responsabilités."/><Loading loading={q.isLoading} error={q.error}/><section className="card table-wrap"><table><thead><tr><th>Agent</th><th>Identifiant</th><th>Rôles</th><th>État</th></tr></thead><tbody>{q.data?.map(u=><tr key={u.id}><td>{u.firstName} {u.lastName}</td><td>{u.username}</td><td>{u.roles.map(r=>r.role.label).join(', ')}</td><td>{u.status}</td></tr>)}</tbody></table></section></>;}
