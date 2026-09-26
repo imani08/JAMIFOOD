@@ -21,7 +21,7 @@ export class CatalogController {
   }
   @Require('pricing.read') @Get('settings') async settings() { return {success:true,data:await this.db.setting.findMany({orderBy:{key:'asc'}})}; }
   @Require('audit.read') @Get('audit') async logs(@Query() query:unknown) {const {page,limit}=pageSchema.parse(query);return {success:true,data:await this.db.auditLog.findMany({take:limit,skip:(page-1)*limit,orderBy:{createdAt:'desc'},select:{id:true,action:true,entityType:true,entityId:true,actorId:true,createdAt:true,requestId:true}}),meta:{page,limit,total:await this.db.auditLog.count()}};}
-  @Require('users.read') @Get('users') async users() {return {success:true,data:await this.db.user.findMany({take:100,select:{id:true,username:true,firstName:true,lastName:true,status:true,roles:{include:{role:{select:{code:true,label:true}}}}}})};}
+  
   @Require('reports.read') @Get('reports') async reports() {
     const today=new Date(localDate());
     const [sales,payments,served,subscriptions,expenses]=await Promise.all([

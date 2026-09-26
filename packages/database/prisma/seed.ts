@@ -8,7 +8,11 @@ async function main() {
     RESPONSABLE_RESTAURANT: ['clients.read','clients.create','clients.update','subscriptions.read','subscriptions.create','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','sales.create','sales.read','orders.create','orders.read','meal.validate','kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','delivery.read','delivery.confirm','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory'],
     CAISSIER: ['clients.read','clients.create','subscriptions.read','subscriptions.create','cash.open','cash.close','cash.read','sales.create','sales.read','orders.create','orders.read','meal.validate','pricing.read'],
     CUISINE: ['kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve'],
-    GESTIONNAIRE_STOCK: ['stock.read','stock.inventory'], LIVREUR: ['delivery.read','delivery.confirm'], ADMIN_TECHNIQUE: ['users.read','users.create','users.update','users.disable'], CLIENT: []
+    GESTIONNAIRE_STOCK: [
+  'stock.read',
+  'stock.adjust',
+  'stock.inventory'
+], LIVREUR: ['delivery.read','delivery.confirm'], ADMIN_TECHNIQUE: ['users.read','users.create','users.update','users.disable'], CLIENT: []
   };
   for (const code of [...new Set(Object.values(rolePermissions).flat())]) await db.permission.upsert({where:{code},update:{},create:{code,label:code}});
   for (const [code,permissions] of Object.entries(rolePermissions)) {
@@ -16,7 +20,17 @@ async function main() {
     for (const permissionCode of permissions) {const permission=await db.permission.findUniqueOrThrow({where:{code:permissionCode}});await db.rolePermission.upsert({where:{roleId_permissionId:{roleId:role.id,permissionId:permission.id}},update:{},create:{roleId:role.id,permissionId:permission.id}});}
   }
   const salt=randomBytes(16).toString('hex'); const passwordHash='scrypt$'+salt+'$'+scryptSync(process.env.DEMO_PASSWORD,salt,64).toString('hex');
-  for (const [username,roleCode] of [['direction.demo','DIRECTION'],['caissier.demo','CAISSIER'],['cuisine.demo','CUISINE']]) {
+const demoUsers = [
+  ['direction.demo', 'DIRECTION'],
+  ['responsable.demo', 'RESPONSABLE_RESTAURANT'],
+  ['caissier.demo', 'CAISSIER'],
+  ['cuisine.demo', 'CUISINE'],
+  ['stock.demo', 'GESTIONNAIRE_STOCK'],
+  ['livreur.demo', 'LIVREUR'],
+  ['admintech.demo', 'ADMIN_TECHNIQUE'],
+] as const;
+
+for (const [username, roleCode] of demoUsers) {
     const user=await db.user.upsert({where:{username},update:{},create:{username,firstName:roleCode,lastName:'DEMO',passwordHash}});
     const role=await db.role.findUniqueOrThrow({where:{code:roleCode}});await db.userRole.upsert({where:{userId_roleId:{userId:user.id,roleId:role.id}},update:{},create:{userId:user.id,roleId:role.id}});
   }
