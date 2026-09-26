@@ -39,6 +39,7 @@ type Report = {
 
   payments: {
     receivedCurrency: string;
+    changeCurrency: string | null;
     method: string;
     _sum: {
       receivedAmount: string | null;
@@ -197,6 +198,7 @@ export default function Reports() {
         'Devise',
         'Montant reçu',
         'Monnaie rendue',
+        'Devise de la monnaie',
         'Nombre',
       ],
 
@@ -208,6 +210,7 @@ export default function Reports() {
             .receivedAmount ?? '0',
           payment._sum
             .changeAmount ?? '0',
+          payment.changeCurrency ?? payment.receivedCurrency,
           payment._count,
         ],
       ),
@@ -292,6 +295,7 @@ export default function Reports() {
         subtitle="Ventes, encaissements, remboursements, dépenses et service."
       >
         <div className="actions">
+          <a className="secondary" href={'/api/v1/reports/export?'+params.toString()}>Exporter Excel (.xlsx)</a>
           <button
             type="button"
             className="secondary"
@@ -468,7 +472,7 @@ export default function Reports() {
 
             <section className="card">
               <h2>
-                Encaissements
+                Encaissements bruts et monnaie
               </h2>
 
               {q.data.payments.map(
@@ -500,6 +504,7 @@ export default function Reports() {
                           .receivedCurrency,
                       )}
                     </strong>
+                    <span className="muted small">Monnaie rendue : {money(payment._sum.changeAmount ?? '0', payment.changeCurrency ?? payment.receivedCurrency)}</span>
                   </div>
                 ),
               )}

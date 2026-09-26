@@ -14,7 +14,7 @@ import { uuid } from '@jami/validation';
 import { z } from 'zod';
 
 import {
-  AuthRequest,
+  AuthRequest, Public,
   Require,
 } from './auth';
 
@@ -165,6 +165,35 @@ export class MenusController {
   // ============================================================
   // LISTE DES MENUS
   // ============================================================
+
+  @Public()
+  @Get('public')
+  async publicMenu(
+    @Query('date') inputDate?: string,
+    @Query('serviceCode') inputService?: string,
+  ) {
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: process.env.RESTAURANT_TIMEZONE ?? 'Africa/Kinshasa' }).format(new Date());
+    const businessDate = dateSchema.parse(inputDate ?? today);
+    const serviceCode = serviceSchema.parse(inputService ?? 'LUNCH');
+    const category = process.env.PUBLIC_PRICE_CATEGORY_CODE;
+    if (!category) return { success: true, data: null, meta: { reason: 'PUBLIC_PRICE_NOT_CONFIGURED' } };
+    const menu = await this.db.menu.findUnique({
+      where: { businessDate_serviceCode: { businessDate: dbDate(businessDate), serviceCode } },
+      include: { versions: { where: { status: 'PUBLISHED' }, take: 1, orderBy: { version: 'desc' }, include: { items: { where: { available: true }, orderBy: { position: 'asc' }, include: { product: true } } } } },
+    });
+    const version = menu?.versions[0];
+    if (!menu || !version) return { success: true, data: null };
+    const items = version.items.flatMap(item => {
+      const remaining = Math.max(0, item.quantityAvailable - item.quantitySold);
+      if (!remaining || !item.product.active || !item.product.available) return [];
+      const snapshot = item.priceSnapshot as { categories?: Record<string, { amount: string; currency: string }> } | null;
+      const price = snapshot?.categories?.[category];
+      if (!price) return [];
+      const product = item.productSnapshot as { name?: string; imageUrl?: string; description?: string } | null;
+      return [{ id: item.productId, name: product?.name ?? item.product.name, imageUrl: product?.imageUrl ?? item.product.imageUrl, description: product?.description ?? item.product.description, variants: item.variants, remaining, price: { amount: price.amount, currency: price.currency } }];
+    });
+    return { success: true, data: { businessDate, serviceCode, version: version.version, items } };
+  }
 
   @Require('menus.read')
   @Get()

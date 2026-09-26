@@ -31,6 +31,7 @@ import { SubscriptionsController } from './subscriptions';
 import { CatalogController } from './catalog';
 import { ApiExceptionFilter } from './http';
 import { UsersController } from './users';
+import { ClientPortalController, ClientPortalService } from './client-portal';
 
 @Module({
   controllers: [
@@ -49,6 +50,7 @@ import { UsersController } from './users';
     MenusController,
     ClientPhotosController,
     DeliveryController,
+    ClientPortalController,
   ],
   providers: [
     PrismaService,
@@ -56,6 +58,7 @@ import { UsersController } from './users';
     ClientsService,
     OrdersService,
     MealsService,
+    ClientPortalService,
     {
       provide: APP_GUARD,
       useClass: AccessGuard,

@@ -1,0 +1,21 @@
+export const navigation = [
+  {section:'Pilotage',href:'/',label:'Mon espace',permission:'auth.session'},
+  {section:'Service',href:'/pos',label:'Terminal de vente',permission:'sales.create'},
+  {section:'Service',href:'/orders',label:'Commandes',permission:'orders.read'},
+  {section:'Service',href:'/kitchen',label:'Cuisine',permission:'kitchen.read'},
+  {section:'Service',href:'/delivery',label:'Livraisons',permission:'delivery.read'},
+  {section:'Clients',href:'/clients',label:'Fiches clients',permission:'clients.read'},
+  {section:'Clients',href:'/clients/verification',label:'Vérification ULC',permission:'clients.verify'},
+  {section:'Clients',href:'/subscriptions',label:'Abonnements',permission:'subscriptions.read'},
+  {section:'Clients',href:'/meals',label:'Contrôle des repas',permission:'meal.validate'},
+  {section:'Gestion',href:'/products',label:'Produits & tarifs',permission:'pricing.read'},
+  {section:'Gestion',href:'/menus',label:'Menus du jour',permission:'menus.read'},
+  {section:'Gestion',href:'/stock',label:'Stocks & achats',permission:'stock.read'},
+  {section:'Finances',href:'/cash',label:'Caisses & clôtures',permission:'cash.read'},
+  {section:'Finances',href:'/expenses',label:'Dépenses',permission:'cash.expense'},
+  {section:'Finances',href:'/reports',label:'Rapports',permission:'reports.read'},
+  {section:'Administration',href:'/users',label:'Utilisateurs',permission:'users.read'},
+  {section:'Administration',href:'/settings',label:'Paramètres',permission:'pricing.read'},
+  {section:'Administration',href:'/audit',label:'Journal d’audit',permission:'audit.read'},
+] as const;
+export function landingPage(permissions:string[]){return navigation.find(item=>permissions.includes(item.permission))?.href;}

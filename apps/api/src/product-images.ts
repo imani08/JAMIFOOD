@@ -137,6 +137,7 @@ export class ProductImagesController {
     };
   }
 
+  @Require('auth.session')
   @Get('product-images/:filename')
   async image(
     @Param('filename') filename: string,

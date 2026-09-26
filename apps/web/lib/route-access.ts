@@ -1,21 +1,5 @@
-export const pagePermissions: Record<string, string> = {
-  '/pos': 'sales.create',
-  '/orders': 'orders.read',
-  '/kitchen': 'kitchen.read',
-  '/delivery': 'delivery.read',
-  '/clients': 'clients.read',
-  '/subscriptions': 'subscriptions.read',
-  '/meals': 'meal.validate',
-  '/products': 'pricing.read',
-  '/menus': 'menus.read',
-  '/stock': 'stock.read',
-  '/cash': 'cash.read',
-  '/expenses': 'cash.expense',
-  '/reports': 'reports.read',
-  '/audit': 'audit.read',
-  '/users': 'users.read',
-  '/settings': 'pricing.read',
-};
+import {navigation} from './navigation';
+export const pagePermissions: Record<string,string> = Object.fromEntries(navigation.filter(item=>item.href!=='/').map(item=>[item.href,item.permission]));
 
 export function hasPageAccess(path: string, permissions: readonly string[]): boolean {
   if (path === '/') return true;

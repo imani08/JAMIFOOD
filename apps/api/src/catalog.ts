@@ -7,7 +7,11 @@ import {
   Post,
   Query,
   Req,
+  Res,
+  StreamableFile,
 } from '@nestjs/common';
+import ExcelJS from 'exceljs';
+import type {Response} from './transport';
 
 import { Prisma } from '@jami/database';
 import {
@@ -652,6 +656,27 @@ export class CatalogController {
     };
   }
 
+  @Require('clients.verify')
+  @Get('client-accounts/pending')
+  async pendingClientAccounts() {
+    return { success: true, data: await this.db.clientAccount.findMany({ where: { verificationStatus: 'PENDING' }, orderBy: { createdAt: 'asc' }, take: 100, select: { id: true, type: true, createdAt: true, email: true, client: { select: { id: true, firstName: true, lastName: true, ulcNumber: true, faculty: true, promotion: true, residency: true, phone: true, category: { select: { label: true } } } } } }) };
+  }
+
+  @Require('clients.verify')
+  @Post('client-accounts/:id/verification')
+  async decideClientAccount(@Param('id') id: string, @Body() input: unknown, @Req() req: AuthRequest) {
+    uuid.parse(id);
+    const body = z.object({ decision: z.enum(['VERIFIED', 'REJECTED']), reason: z.string().trim().min(3).max(500) }).strict().parse(input);
+    const account = await this.db.clientAccount.findUnique({ where: { id } });
+    if (!account || account.verificationStatus !== 'PENDING') throw new DomainError('VERIFICATION_UNAVAILABLE', 'Cette demande ne peut plus être traitée.', 409);
+    await this.db.$transaction(async tx => {
+      await tx.clientAccount.update({ where: { id }, data: { verificationStatus: body.decision, verifiedAt: body.decision === 'VERIFIED' ? new Date() : null, verifiedById: req.actor.id } });
+      await tx.auditLog.create({ data: { actorId: req.actor.id, action: `CLIENT_ACCOUNT_${body.decision}`, entityType: 'ClientAccount', entityId: id, oldValue: { verificationStatus: 'PENDING' }, newValue: { verificationStatus: body.decision, reason: body.reason }, metadata: { clientId: account.clientId } } });
+      await tx.clientPortalEvent.create({ data: { accountId: id, action: `ACCOUNT_${body.decision}` } });
+    });
+    return { success: true, data: { verificationStatus: body.decision } };
+  }
+
   @Require('pricing.update')
   @Post('commercial/client-categories')
   createClientCategory(
@@ -1032,7 +1057,10 @@ const product =
           );
         }
 
+        const nextStockId=body.stockItemId===undefined?before.stockItemId:body.stockItemId;
+        if((body.stockMode??before.stockMode)==='DIRECT' && !nextStockId)throw new DomainError('STOCK_ITEM_REQUIRED','Sélectionnez un article de stock pour la revente directe.',400);
         if (body.categoryId) {
+          // Category validation remains independent from stock settings.
           const category =
             await tx.productCategory.findFirst({
               where: {
@@ -1839,6 +1867,19 @@ async logs(@Query() input: unknown) {
   // RAPPORT ACTUEL
   // ============================================================
 
+ @Require('reports.export')
+ @Get('reports/export')
+ async exportReport(@Query('from') from:string|undefined,@Query('to') to:string|undefined,@Query('serviceMode') serviceMode:string|undefined,@Res({passthrough:true}) response:Response) {
+   const {data}=await this.reports(from,to,serviceMode);
+   const book=new ExcelJS.Workbook();book.creator='JAMI FOOD';
+   const summary=book.addWorksheet('Synthèse');summary.addRows([['JAMI FOOD',data.from,data.to],['Repas servis',data.served],['Abonnements actifs',data.subscriptions],['Paiements en attente',data.pendingPayments]]);
+   const sales=book.addWorksheet('Ventes');sales.addRow(['Devise','Montant','Commandes']);for(const row of data.sales)sales.addRow([row.currency,row._sum.totalAmount?.toString()??'0',row._count]);
+   const payments=book.addWorksheet('Encaissements bruts');payments.addRow(['Devise reçue','Moyen','Montant reçu','Monnaie rendue','Devise monnaie','Nombre']);for(const row of data.payments)payments.addRow([row.receivedCurrency,row.method,row._sum.receivedAmount?.toString()??'0',row._sum.changeAmount?.toString()??'0',row.changeCurrency??row.receivedCurrency,row._count]);
+   for(const [name,rows] of [['Remboursements',data.refunds],['Dépenses',data.expenses]] as const){const sheet=book.addWorksheet(name);sheet.addRow(['Devise','Montant']);for(const row of rows)sheet.addRow([row.currency,row._sum.amount?.toString()??'0']);}
+   for(const sheet of book.worksheets){sheet.getRow(1).font={bold:true};sheet.columns.forEach(column=>{column.width=26;});sheet.views=[{state:'frozen',ySplit:1}];}
+   response.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');response.setHeader('Content-Disposition',`attachment; filename="rapport-${data.from}-${data.to}.xlsx"`);
+   return new StreamableFile(Buffer.from(await book.xlsx.writeBuffer()));
+ }
  @Require('reports.read')
 @Get('reports')
 async reports(
@@ -1947,11 +1988,13 @@ async reports(
     this.db.payment.groupBy({
       by: [
         'receivedCurrency',
+        'changeCurrency',
         'method',
       ],
 
       where: {
-        status: 'CONFIRMED',
+        // A later refund must not erase the original cash receipt.
+        status: { in: ['CONFIRMED', 'REFUNDED'] },
 
         confirmedAt: {
           gte: start,

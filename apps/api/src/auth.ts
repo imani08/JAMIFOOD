@@ -7,7 +7,13 @@ import type { Request, Response } from './transport';
 import { PrismaService } from './prisma.service';
 import { DomainError } from './http';
 export const Public = () => SetMetadata('public', true);
-export const Require = (...permissions: string[]) => SetMetadata('permissions', permissions);
+// Accumulate stacked decorators instead of silently replacing a requirement.
+export const Require = (...permissions: string[]): MethodDecorator & ClassDecorator =>
+  (target: object, _key?: string | symbol, descriptor?: PropertyDescriptor) => {
+    const subject = descriptor?.value ?? target;
+    const existing = Reflect.getOwnMetadata('permissions', subject) as string[] | undefined;
+    Reflect.defineMetadata('permissions', [...new Set([...(existing ?? []), ...permissions])], subject);
+  };
 export type Actor = { id: string; username: string; firstName: string; lastName: string; roles: string[]; permissions: string[] };
 export type AuthRequest = Request & { actor: Actor; sessionId: string; requestId: string };
 async function verifyPassword(stored: string, password: string) {
@@ -79,12 +85,13 @@ export class AccessGuard implements CanActivate {
   async canActivate(context: ExecutionContext) {
     const req = context.switchToHttp().getRequest<AuthRequest>();
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
-      const allowed = (process.env.WEB_ORIGIN ?? 'http://localhost:3000').split(',').map(origin => origin.trim()).filter(Boolean);
+      const allowed = (process.env.WEB_ORIGIN ?? 'http://localhost:3000,http://localhost:3002').split(',').map(origin => origin.trim()).filter(Boolean);
       if (!req.headers.origin || !allowed.includes(req.headers.origin) || req.headers['x-jami-request'] !== '1') throw new DomainError('CSRF_REJECTED', 'Origine de la requête non autorisée.', 403);
     }
     if (this.reflector.getAllAndOverride<boolean>('public', [context.getHandler(), context.getClass()])) return true;
     Object.assign(req, await this.auth.authenticate(req));
-    const required = this.reflector.getAllAndOverride<string[]>('permissions', [context.getHandler(), context.getClass()]) ?? [];
+    const required = this.reflector.getAllAndMerge<string[]>('permissions', [context.getHandler(), context.getClass()]) ?? [];
+    if(!required.length)throw new DomainError('FORBIDDEN','Cette route ne possède pas d’autorisation explicite.',403);
     if (required.some(p => !req.actor.permissions.includes(p))) throw new DomainError('FORBIDDEN', 'Vous ne disposez pas de cette permission.', 403);
     return true;
   }

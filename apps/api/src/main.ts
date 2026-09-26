@@ -6,7 +6,8 @@ import { AppModule } from './app.module';
 
 async function bootstrap() {
   const production = process.env.NODE_ENV === 'production';
-  const webOrigins = (process.env.WEB_ORIGIN ?? (production ? '' : 'http://localhost:3000'))
+  if (production && !process.env.DATABASE_URL) throw new Error('DATABASE_URL est obligatoire en production.');
+  const webOrigins = (process.env.WEB_ORIGIN ?? (production ? '' : 'http://localhost:3000,http://localhost:3002'))
     .split(',').map(origin => origin.trim()).filter(Boolean);
   const idleMinutes = Number(process.env.SESSION_IDLE_MINUTES ?? 30);
   if (!Number.isInteger(idleMinutes) || idleMinutes < 5 || idleMinutes > 480) {
@@ -15,7 +16,10 @@ async function bootstrap() {
   if (production && process.env.COOKIE_SECURE !== 'true') {
     throw new Error('COOKIE_SECURE=true est obligatoire en production.');
   }
-  if (production && (!webOrigins.length || webOrigins.includes('*') || webOrigins.some(origin => !/^https:\/\//i.test(origin)))) {
+  if (production && (!webOrigins.length || webOrigins.some(origin => {
+    try { const url = new URL(origin); return url.protocol !== 'https:' || url.origin !== origin || origin.includes('*'); }
+    catch { return true; }
+  }))) {
     throw new Error('WEB_ORIGIN doit contenir une liste explicite d’origines HTTPS en production.');
   }
   const app = await NestFactory.create(AppModule, { bufferLogs: true });

@@ -18,6 +18,19 @@ enum ClientStatus {
   ARCHIVED
 }
 
+enum ClientAccountType {
+  STUDENT_HOME
+  STUDENT_EXTERNAL
+  STAFF
+}
+
+enum ClientVerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+  SUSPENDED
+}
+
 enum MenuVersionStatus {
   DRAFT
   PUBLISHED
@@ -223,9 +236,51 @@ model Client {
   subscriptions         Subscription[]
   orders                Order[]
   qrCodes               QRCode[]
+  account               ClientAccount?
 
   @@index([lastName, firstName])
   @@index([phone])
+}
+
+model ClientAccount {
+  id                 String                    @id @default(uuid()) @db.Uuid
+  clientId           String                    @unique @db.Uuid
+  email              String                    @unique
+  passwordHash       String
+  type               ClientAccountType
+  verificationStatus ClientVerificationStatus  @default(PENDING)
+  verifiedAt         DateTime?
+  verifiedById       String?                   @db.Uuid
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+  client             Client                    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  sessions           ClientSession[]
+  events             ClientPortalEvent[]
+
+  @@index([verificationStatus, createdAt])
+}
+
+model ClientSession {
+  id             String        @id @default(uuid()) @db.Uuid
+  accountId      String        @db.Uuid
+  tokenHash      String        @unique
+  expiresAt      DateTime
+  lastActivityAt DateTime
+  createdAt      DateTime      @default(now())
+  account        ClientAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, expiresAt])
+}
+
+model ClientPortalEvent {
+  id        String        @id @default(uuid()) @db.Uuid
+  accountId String        @db.Uuid
+  action    String
+  metadata  Json?
+  createdAt DateTime      @default(now())
+  account   ClientAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, createdAt])
 }
 
 model QRCode {
@@ -401,7 +456,7 @@ model Product {
   updatedAt           DateTime @default(now()) @updatedAt
 
   category   ProductCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  stockItem  StockItem? @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+  stockItem  StockItem?      @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
   prices     ProductPrice[]
   orderItems OrderItem[]
   menuItems  MenuItem[]
@@ -807,7 +862,7 @@ model SettingHistory {
 }
 
 model StockItem {
-  products Product[]
+  products          Product[]
   id                String             @id @default(uuid()) @db.Uuid
   code              String             @unique
   name              String

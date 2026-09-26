@@ -16,15 +16,14 @@ if (-not (Test-Path $ReportRoot)) {
 }
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$container = "jami-food-restore-test"
+$container = "jami-food-restore-test-$timestamp"
 $containerBackup = "/tmp/jami-food-restore.dump"
 $reportFile = Join-Path $ReportRoot "restore-test-$timestamp.txt"
 
 Write-Host "JAMI FOOD - Test de restauration isolé"
 Write-Host "Archive : $BackupFile"
 
-# Supprime uniquement un ancien conteneur de test portant ce nom.
-docker rm -f $container 2>$null | Out-Null
+# A unique test container avoids deleting a pre-existing environment.
 
 docker run `
   -d `

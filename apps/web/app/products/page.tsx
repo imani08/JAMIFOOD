@@ -50,6 +50,9 @@ type ProductPrice = {
 };
 
 type Product = {
+  stockMode: 'PRODUCTION'|'DIRECT'|'NONE';
+  stockItemId: string|null;
+  stockQuantity: string;
   imageUrl: string | null;
   id: string;
   sku: string | null;
@@ -76,6 +79,10 @@ function ProductEditor({
   clientCategories: ClientCategory[];
 }) {
   const action = useAction();
+  const stocks=useData<{id:string;name:string;unit:string}[]>('/stock?limit=100');
+  const [stockMode,setStockMode]=useState(product.stockMode);
+  const [stockItemId,setStockItemId]=useState(product.stockItemId??'');
+  const [stockQuantity,setStockQuantity]=useState(product.stockQuantity);
   const [imageUrl, setImageUrl] = useState(product.imageUrl ?? '');
 
   const [sku, setSku] =
@@ -141,6 +148,7 @@ function ProductEditor({
           `/commercial/products/${product.id}`,
           {
             imageUrl: imageUrl || undefined,
+            stockMode,stockItemId:stockItemId||null,stockQuantity,
             name,
             categoryId,
             description,
@@ -252,6 +260,7 @@ function ProductEditor({
       <div className="two-columns section">
         <section>
           <h3>Fiche produit</h3>
+          <fieldset className="form-section"><legend>Déstockage</legend><label>Mode<select value={stockMode} onChange={event=>setStockMode(event.target.value as Product['stockMode'])}><option value="PRODUCTION">Ingrédients déduits en production</option><option value="DIRECT">Article revendu : déduction à la vente</option><option value="NONE">Sans suivi de stock</option></select></label>{stockMode==='DIRECT'&&<div className="form-grid"><label>Article de stock<select value={stockItemId} onChange={event=>setStockItemId(event.target.value)}><option value="">Choisir un article</option>{stocks.data?.map(item=><option key={item.id} value={item.id}>{item.name} ({item.unit})</option>)}</select></label><label>Quantité par unité vendue<input type="number" min="0.001" step="0.001" value={stockQuantity} onChange={event=>setStockQuantity(event.target.value)}/></label></div>}<p className="muted small">Un remboursement financier ne remet pas automatiquement la marchandise en stock.</p></fieldset>
           <ProductImage value={imageUrl} name={name} />
           <label>Remplacer l’image (JPG, PNG, WEBP, 5 Mo maximum)
             <input type="file" accept="image/jpeg,image/png,image/webp" disabled={action.busy} onChange={async event => {
@@ -597,9 +606,11 @@ function ProductEditor({
 }
 
 export default function Products() {
+  const [view,setView]=useState('catalogue');
+  const [search,setSearch]=useState('');
   const products =
     useData<Product[]>(
-      '/commercial/products?limit=100',
+      '/commercial/products?limit=100&q='+encodeURIComponent(search),
     );
 
   const categories =
@@ -792,7 +803,8 @@ export default function Products() {
         subtitle="Produits, disponibilité et historique des prix par catégorie de client."
       />
 
-      <div className="two-columns">
+      <div className="toolbar"><div className="tabs" role="tablist" aria-label="Catalogue"><button type="button" role="tab" aria-selected={view==='catalogue'} className="secondary" onClick={()=>setView('catalogue')}>Catalogue</button><button type="button" role="tab" aria-selected={view==='creation'} className="secondary" onClick={()=>setView('creation')}>Nouveau produit / catégorie</button><button type="button" role="tab" aria-selected={view==='tarifs'} className="secondary" onClick={()=>setView('tarifs')}>Grille tarifaire</button></div>{view==='catalogue'&&<label>Rechercher un produit<input type="search" value={search} onChange={event=>setSearch(event.target.value)} placeholder="Nom ou référence"/></label>}</div>
+      <div className="two-columns" hidden={view!=='creation'}>
         <form
           className="card"
           onSubmit={createProduct}
@@ -975,6 +987,7 @@ export default function Products() {
       <form
         className="card section"
         onSubmit={submitBulkPrices}
+        hidden={view!=='tarifs'}
       >
         <h2>
           Modification groupée des prix
@@ -1101,7 +1114,7 @@ export default function Products() {
         </button>
       </form>
 
-      <section className="section">
+      <section className="section" hidden={view!=='catalogue'}>
         <h2>Produits existants</h2>
 
         <Loading

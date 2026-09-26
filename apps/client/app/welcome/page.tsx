@@ -1,0 +1,4 @@
+import Link from 'next/link';
+import { ArrowRight, Heart, Leaf, Sparkles } from '../icons';
+
+export default function WelcomePage() { return <main className="page-wrap welcome-info"><span className="eyebrow"><Sparkles size={14}/> L’ESPRIT JAMI FOOD</span><h1>Bien manger,<br/><em>vivre le campus.</em></h1><p>JAMI FOOD accompagne les journées à l’Université Loyola du Congo : une cuisine généreuse, un accueil chaleureux et des moments partagés autour d’un bon repas.</p><div className="value-grid"><article><Leaf/><h2>Préparé avec soin</h2><p>Chaque pause mérite de bonnes choses.</p></article><article><Heart/><h2>Au cœur du campus</h2><p>Un lieu de rencontre pour toute la communauté ULC.</p></article></div><Link className="button button-dark" href="/menu">Découvrir le menu <ArrowRight size={16}/></Link></main>; }

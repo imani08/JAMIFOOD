@@ -6,10 +6,10 @@ async function main() {
   const rolePermissions: Record<string,string[]> = {
     DIRECTION: ['users.read','users.create','users.update','users.disable','clients.read','clients.create','clients.update','clients.archive','clients.merge','subscriptions.read','subscriptions.create','subscriptions.suspend','subscriptions.cancel','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','cash.refund','cash.adjust','sales.create','sales.read','orders.create','orders.read','orders.cancel','meal.validate','meal.correct','meal.exception','kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','delivery.read','delivery.confirm','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory','menus.read',
 'menus.manage',
-'menus.publish',],
+'menus.publish','clients.verify',],
     RESPONSABLE_RESTAURANT: ['clients.read','clients.create','clients.update','subscriptions.read','subscriptions.create','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','sales.create','sales.read','orders.create','orders.read','meal.validate','kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','delivery.read','delivery.confirm','delivery.assign','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory','menus.read',
 'menus.manage',
-'menus.publish',],
+'menus.publish','clients.verify',],
     CAISSIER: ['clients.read','clients.create','subscriptions.read','subscriptions.create','cash.open','cash.close','cash.read','sales.create','sales.read','orders.create','orders.read','meal.validate','pricing.read'],
     CUISINE: ['kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','menus.read'],
     GESTIONNAIRE_STOCK: [
@@ -198,3 +198,4 @@ for (const [username, roleCode] of demoUsers) {
   for(const [code,name,unit] of [['RIZ','Riz','kg'],['HUILE','Huile','litre'],['EAU','Bouteille d’eau','pièce']]) await db.stockItem.upsert({where:{code},update:{},create:{code,name,unit,alertThreshold:'5'}});
 }
 main().finally(()=>db.$disconnect());
+

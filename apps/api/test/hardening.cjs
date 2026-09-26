@@ -49,8 +49,12 @@ test('HTTP images, products, refund, partial receipts, supplier payment and prod
     assert.equal((await db.order.findUniqueOrThrow({where:{id:order.id}})).totalAmount.toString(),'8');
     const payment=await ok('/orders/'+order.id+'/payments',{cashSessionId:session.id,method:'CASH',receivedAmount:'10',receivedCurrency:'USD'});
     assert.equal(payment.changeAmount,'2');
+    const receiptsBeforeRefund=(await ok('/reports')).payments;
     const refunded=await ok('/orders/payments/'+payment.id+'/refund',{cashSessionId:session.id,amount:'8',reason:'Recette remboursement net'});
     assert.equal(refunded.remainingRefundable,'0');assert.equal((await db.payment.findUniqueOrThrow({where:{id:payment.id}})).status,'REFUNDED');
+    const receiptsAfterRefund=(await ok('/reports')).payments;
+    const sortedReceipts=rows=>rows.map(row=>JSON.stringify(row)).sort();
+    assert.deepEqual(sortedReceipts(receiptsAfterRefund),sortedReceipts(receiptsBeforeRefund),'Refund preserves the original receipts and change currencies');
     const stock=await ok('/stock',{code:'T'+randomUUID().slice(0,8),name:'Stock recette',unit:'kg',alertThreshold:'1'});
     await ok('/stock/'+stock.id+'/movements',{quantity:'10',type:'INITIAL',reason:'Stock historique sans lot'});
     const supplier=await ok('/stock/suppliers',{name:'Fournisseur recette'});
@@ -69,5 +73,21 @@ test('HTTP images, products, refund, partial receipts, supplier payment and prod
     await ok('/stock/recipes/'+recipeVersion.id+'/validate',{});const key=randomUUID();await ok('/stock/productions',production,key);await ok('/stock/productions',production,key);
     assert.equal((await db.stockItem.findUniqueOrThrow({where:{id:stock.id}})).quantity.toString(),'5');
     assert.equal((await db.stockLot.findFirstOrThrow({where:{stockItemId:stock.id}})).quantity.toString(),'0');
+    await ok('/commercial/products/'+product.id,{stockMode:'DIRECT',stockItemId:stock.id,stockQuantity:'1'});
+    const resale=await ok('/orders',{categoryCode:'ETUDIANT_EXTERNE',serviceMode:'DINE_IN',currency:'USD',items:[{productId:product.id,quantity:1}]});
+    const payKey=randomUUID(),tender={cashSessionId:session.id,method:'CASH',receivedAmount:resale.totalAmount,receivedCurrency:'USD'};
+    await ok('/orders/'+resale.id+'/payments',tender,payKey);await ok('/orders/'+resale.id+'/payments',tender,payKey);
+    assert.equal((await db.stockItem.findUniqueOrThrow({where:{id:stock.id}})).quantity.toString(),'4');
+    const exportResponse=await fetch(base+'/reports/export',{headers:{cookie}});assert.equal(exportResponse.status,200);
+    const ExcelJS=require('exceljs'),book=new ExcelJS.Workbook();await book.xlsx.load(Buffer.from(await exportResponse.arrayBuffer()));assert.ok(book.getWorksheet('Ventes'));
+    const directionCookie=cookie;
+    for(const [username,allowed,forbidden] of [['caissier.demo','/cash','/reports'],['cuisine.demo','/kitchen','/orders'],['stock.demo','/stock','/reports'],['livreur.demo','/delivery','/reports'],['admintech.demo','/users','/reports'],['responsable.demo','/reports','/users']]) {
+      const auth=await request('/auth/login',{username,password:process.env.DEMO_PASSWORD});cookie=auth.response.headers.get('set-cookie').split(';')[0];
+      assert.equal((await request(allowed)).response.status,200,username+' allowed');assert.equal((await request(forbidden)).response.status,403,username+' forbidden');
+      if(username!=='responsable.demo')assert.equal((await request('/orders/'+order.id+'/cancel',{reason:'Accès interdit test'})).response.status,403);
+      if(['cuisine.demo','stock.demo','livreur.demo','admintech.demo'].includes(username))assert.equal((await request('/subscriptions/'+randomUUID())).response.status,403);
+    }
+    cookie=undefined;assert.equal((await request('/orders')).response.status,401);cookie=directionCookie;
+    const csrf=await fetch(base+'/commercial/products',{method:'POST',headers:{cookie,origin:'https://untrusted.invalid','content-type':'application/json'},body:'{}'});assert.equal(csrf.status,403);
   } finally {await app.close();await rm(dir,{recursive:true,force:true});}
 });
