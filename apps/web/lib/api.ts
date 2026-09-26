@@ -11,3 +11,32 @@ export function downloadCSV(name: string, rows: (string | number)[][]) {
   const text = '\ufeff' + rows.map(row => row.map(v => '"' + String(v).replace(/^[=+@-]/, "'$&").replaceAll('"', '""') + '"').join(';')).join('\r\n');
   const url=URL.createObjectURL(new Blob([text],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();URL.revokeObjectURL(url);
 }
+
+export async function apiForm<T>(
+  path: string,
+  body: FormData,
+): Promise<T> {
+  const response = await fetch(
+    '/api/v1' + path,
+    {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'X-Jami-Request': '1',
+      },
+      body,
+    },
+  );
+
+  const result =
+    (await response.json()) as ApiResult<T>;
+
+  if (!response.ok || !result.success) {
+    throw new Error(
+      result.error?.message ??
+        'Une erreur est survenue lors de l’envoi du fichier.',
+    );
+  }
+
+  return result.data;
+}

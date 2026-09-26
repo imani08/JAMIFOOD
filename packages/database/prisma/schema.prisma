@@ -337,41 +337,65 @@ model MealReservation {
 }
 
 model ProductCategory {
-  id       String    @id @default(uuid()) @db.Uuid
-  code     String    @unique
-  label    String
+  id        String   @id @default(uuid()) @db.Uuid
+  code      String   @unique
+  label     String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
   products Product[]
 }
 
 model Product {
-  id         String          @id @default(uuid()) @db.Uuid
-  categoryId String          @db.Uuid
-  sku        String?         @unique
-  name       String
-  active     Boolean         @default(true)
+  id                  String   @id @default(uuid()) @db.Uuid
+  categoryId          String   @db.Uuid
+  sku                 String?  @unique
+  name                String
+  imageUrl            String   @default("/products/placeholder.svg")
+  description         String?
+  saleUnit            String   @default("portion")
+  baseComposition     String?
+  optionsDescription  String?
+  variantsDescription String?
+  available           Boolean  @default(true)
+  active              Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @default(now()) @updatedAt
+
   category   ProductCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   prices     ProductPrice[]
   orderItems OrderItem[]
+
+  @@index([categoryId, active, available])
+  @@index([name])
 }
 
 model ProductPrice {
-  categoryCode String         @default("ETUDIANT_EXTERNE")
-  id           String         @id @default(uuid()) @db.Uuid
-  productId    String         @db.Uuid
-  product      Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
-  versions     PriceVersion[]
+  id           String @id @default(uuid()) @db.Uuid
+  productId    String @db.Uuid
+  categoryCode String @default("ETUDIANT_EXTERNE")
+
+  product  Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  versions PriceVersion[]
+
+  @@unique([productId, categoryCode])
+  @@index([categoryCode])
 }
 
 model PriceVersion {
-  id             String       @id @default(uuid()) @db.Uuid
-  productPriceId String       @db.Uuid
+  id             String      @id @default(uuid()) @db.Uuid
+  productPriceId String      @db.Uuid
   version        Int
-  amount         Decimal      @db.Decimal(18, 2)
+  amount         Decimal     @db.Decimal(18, 2)
   currency       Currency
   effectiveFrom  DateTime
   effectiveTo    DateTime?
-  status         PriceStatus  @default(SCHEDULED)
-  productPrice   ProductPrice @relation(fields: [productPriceId], references: [id], onDelete: Restrict)
+  status         PriceStatus @default(SCHEDULED)
+  createdById    String?     @db.Uuid
+  createdAt      DateTime    @default(now())
+
+  productPrice ProductPrice @relation(fields: [productPriceId], references: [id], onDelete: Restrict)
 
   @@unique([productPriceId, version])
   @@index([productPriceId, effectiveFrom])
@@ -638,11 +662,29 @@ model LoginAttempt {
 }
 
 model Setting {
-  key         String   @id
-  value       Json
-  validated   Boolean  @default(false)
-  updatedById String?  @db.Uuid
-  updatedAt   DateTime @updatedAt
+  key           String           @id
+  value         Json
+  validated     Boolean          @default(false)
+  updatedById   String?          @db.Uuid
+  validatedById String?          @db.Uuid
+  validatedAt   DateTime?
+  updatedAt     DateTime         @updatedAt
+  histories     SettingHistory[]
+}
+
+model SettingHistory {
+  id           String   @id @default(uuid()) @db.Uuid
+  settingKey   String
+  oldValue     Json
+  newValue     Json
+  oldValidated Boolean
+  newValidated Boolean
+  changedById  String?  @db.Uuid
+  changedAt    DateTime @default(now())
+
+  setting Setting @relation(fields: [settingKey], references: [key], onDelete: Restrict)
+
+  @@index([settingKey, changedAt])
 }
 
 model StockItem {

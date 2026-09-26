@@ -41,10 +41,141 @@ for (const [username, roleCode] of demoUsers) {
     await db.subscriptionPlanVersion.upsert({where:{planId_version:{planId:plan.id,version:1}},update:{},create:{planId:plan.id,version:1,price,currency:'USD',services:[...services],eligibilityDays:[1,2,3,4,5,6],quotaRules:{pendingValidation:false,days:30,demo:true},effectiveFrom:new Date('2026-01-01'),status:'ACTIVE'}});
   }
   const category=await db.productCategory.upsert({where:{code:'DEMO'},update:{},create:{code:'DEMO',label:'Menu DEMO'}});
-  for(const [sku,name,price] of [['DEMO-REPAS','Repas étudiant complet','8000'],['DEMO-JUS','Jus du jour · DEMO','1700']]) {
-    const p=await db.product.upsert({where:{sku},update:{},create:{sku,name,categoryId:category.id}});
-    for(const categoryCode of ['ETUDIANT_HOME','ETUDIANT_EXTERNE','PERSONNEL_ULC']) {
-      if(!await db.productPrice.findFirst({where:{productId:p.id,categoryCode}})) await db.productPrice.create({data:{productId:p.id,categoryCode,versions:{create:{version:1,amount:sku==='DEMO-REPAS'&&categoryCode==='PERSONNEL_ULC'?'10000':price,currency:'CDF',effectiveFrom:new Date('2026-01-01'),status:'ACTIVE'}}}});
+    const productCategories = [
+    ['REPAS', 'Repas complets'],
+    ['PETIT_DEJEUNER', 'Petits-déjeuners'],
+    ['SANDWICH', 'Sandwichs'],
+    ['SHAWARMA', 'Shawarmas'],
+    ['BOISSON', 'Boissons'],
+    ['SUPPLEMENT', 'Suppléments'],
+  ] as const;
+
+  for (const [code, label] of productCategories) {
+    await db.productCategory.upsert({
+      where: { code },
+      update: {
+        label,
+        active: true,
+      },
+      create: {
+        code,
+        label,
+        active: true,
+      },
+    });
+  }
+
+  const mealCategory =
+    await db.productCategory.findUniqueOrThrow({
+      where: { code: 'REPAS' },
+    });
+
+  const drinkCategory =
+    await db.productCategory.findUniqueOrThrow({
+      where: { code: 'BOISSON' },
+    });
+
+  const demoProducts = [
+    {
+      sku: 'DEMO-REPAS',
+      name: 'Repas étudiant complet',
+      categoryId: mealCategory.id,
+      price: '8000',
+      saleUnit: 'portion',
+      description:
+        'Repas complet de démonstration.',
+      baseComposition:
+        'Plat principal selon le menu du service.',
+    },
+    {
+      sku: 'DEMO-JUS',
+      name: 'Jus du jour · DEMO',
+      categoryId: drinkCategory.id,
+      price: '1700',
+      saleUnit: 'bouteille',
+      description:
+        'Boisson de démonstration.',
+      baseComposition: '',
+    },
+  ] as const;
+
+  for (const item of demoProducts) {
+    const product = await db.product.upsert({
+      where: {
+        sku: item.sku,
+      },
+      update: {
+        name: item.name,
+        categoryId: item.categoryId,
+        saleUnit: item.saleUnit,
+        description: item.description,
+        baseComposition:
+          item.baseComposition,
+        active: true,
+        available: true,
+      },
+      create: {
+        sku: item.sku,
+        name: item.name,
+        categoryId: item.categoryId,
+        saleUnit: item.saleUnit,
+        description: item.description,
+        baseComposition:
+          item.baseComposition,
+        active: true,
+        available: true,
+      },
+    });
+
+    for (const categoryCode of [
+      'ETUDIANT_HOME',
+      'ETUDIANT_EXTERNE',
+      'PERSONNEL_ULC',
+    ]) {
+      const productPrice =
+        await db.productPrice.upsert({
+          where: {
+            productId_categoryCode: {
+              productId: product.id,
+              categoryCode,
+            },
+          },
+          update: {},
+          create: {
+            productId: product.id,
+            categoryCode,
+          },
+        });
+
+      const exists =
+        await db.priceVersion.findFirst({
+          where: {
+            productPriceId:
+              productPrice.id,
+          },
+        });
+
+      if (!exists) {
+        await db.priceVersion.create({
+          data: {
+            productPriceId:
+              productPrice.id,
+            version: 1,
+            amount:
+              item.sku === 'DEMO-REPAS' &&
+              categoryCode ===
+                'PERSONNEL_ULC'
+                ? '10000'
+                : item.price,
+            currency: 'CDF',
+            effectiveFrom: new Date(
+              '2026-01-01',
+            ),
+            status: 'ACTIVE',
+            createdById: admin.id,
+          },
+        });
+      }
     }
   }
   await db.exchangeRate.upsert({where:{baseCurrency_quoteCurrency_effectiveFrom:{baseCurrency:'USD',quoteCurrency:'CDF',effectiveFrom:new Date('2026-01-01')}},update:{},create:{baseCurrency:'USD',quoteCurrency:'CDF',rate:'2500',effectiveFrom:new Date('2026-01-01'),source:'DEMO — taux fictif de recette R07',status:'ACTIVE',createdById:admin.id}});

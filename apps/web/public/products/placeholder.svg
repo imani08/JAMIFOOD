@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="500" viewBox="0 0 800 500">
+  <rect width="800" height="500" fill="#fff5eb"/>
+  <circle cx="400" cy="205" r="105" fill="#7c1024"/>
+  <path d="M345 190h110v25H345zM365 145h70v120h-70z" fill="#efa50b"/>
+  <text x="400" y="365" text-anchor="middle"
+        font-family="Arial, sans-serif"
+        font-size="42" font-weight="700"
+        fill="#7c1024">JAMI FOOD</text>
+  <text x="400" y="410" text-anchor="middle"
+        font-family="Arial, sans-serif"
+        font-size="22"
+        fill="#847077">Image du produit</text>
+</svg>
