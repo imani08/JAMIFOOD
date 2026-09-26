@@ -7,6 +7,7 @@ export const consumeMealSchema = z.object({ mealRightId: uuid, serviceCode: z.en
 export const createOrderSchema = z
   .object({
     clientId: uuid.optional(),
+    menuVersionId: uuid.optional(),
 
     categoryCode: z
       .string()

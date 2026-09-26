@@ -1,6 +1,7 @@
 'use client';
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
+import { ProductImage } from '../../components/product-image';
 import { useData, useAction, Feedback, Heading, Loading } from '../../components/common';
 import { api, money } from '../../lib/api';
 type Product={
@@ -46,7 +47,10 @@ const [
   selectedClient,
   setSelectedClient,
 ] = useState<Client | null>(null);
-const products = useData<Product[]>('/products?category=' + category);
+const [service,setService]=useState('LUNCH');
+const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Kinshasa'}).format(new Date());
+const menu=useData<{version:{id:string;items:{productId:string;name:string;imageUrl:string;price:{amount:string;currency:string}}[]}}|null>(`/menus/active?date=${today}&serviceCode=${service}&categoryCode=${category}`);
+const products={isLoading:menu.isLoading,error:menu.error,data:menu.data?.version.items.filter(item=>item.price.currency==='CDF').map(item=>({id:item.productId,name:item.name,imageUrl:item.imageUrl,prices:[{versions:[item.price]}]}))};
 const clients =
   useData<Client[]>(
     '/clients?q=' +
@@ -57,6 +61,8 @@ const clients =
   );
 const session = useData<{id:string}|null>('/cash');const action=useAction();const total=useMemo(()=>cart.reduce((n,{p,quantity})=>n+Number(p.prices[0]?.versions[0]?.amount??0)*quantity,0),[cart]);return <><Heading title="Caisse · terminal de vente" subtitle="Encaissez, remettez le ticket, puis suivez la préparation."/><Feedback {...action}/>{!session.data&&<p className="error">Ouvrez une session dans <Link href="/cash"><u>Caisses & clôtures</u></Link> avant d’encaisser.</p>}<div className="pos"><section className="card"><h2>Le menu du campus</h2>
 <div className="section">
+  <label>Service du menu publié<select value={service} disabled={!!order} onChange={event=>{setService(event.target.value);setCart([]);}}><option value="BREAKFAST">Petit déjeuner</option><option value="LUNCH">Déjeuner</option><option value="DINNER">Dîner</option></select></label>
+  {!menu.isLoading && !menu.data && <p role="status">Aucun menu publié pour ce service. Publiez le menu avant de vendre au POS.</p>}
   <h3>Client</h3>
 
   {selectedClient ? (
@@ -152,6 +158,7 @@ const session = useData<{id:string}|null>('/cash');const action=useAction();cons
       </p>
     </>
   )}
+  
 </div><div className="form-grid">
   <label>
     Catégorie client
@@ -258,6 +265,7 @@ const session = useData<{id:string}|null>('/cash');const action=useAction();cons
         }
       >
         <span>{p.name}</span>
+        <ProductImage value={p.imageUrl} name={p.name} />
 
         <strong>
           {money(
@@ -460,6 +468,7 @@ const session = useData<{id:string}|null>('/cash');const action=useAction();cons
 
                     categoryCode:
                       category,
+                    menuVersionId: menu.data?.version.id,
 
                     serviceMode:
                       mode,
@@ -493,7 +502,8 @@ const session = useData<{id:string}|null>('/cash');const action=useAction();cons
         Passer au paiement
       </button>
     </>
-  ) : payment ? (
+  )  : payment?.orderStatus ===
+  'CONFIRMED' ? (
     <>
       <p
         className={
@@ -551,7 +561,20 @@ const session = useData<{id:string}|null>('/cash');const action=useAction();cons
     </>
   ) : (
     <>
-      <div className="form-grid">
+      
+      {payment &&
+  Number(payment.remainingAmount) > 0 && (
+    <p className="success">
+      Paiement enregistré.
+      {' '}Reste à payer :{' '}
+      <strong>
+        {money(
+          payment.remainingAmount,
+          order.currency,
+        )}
+      </strong>
+    </p>
+  )}<div className="form-grid">
         <label>
   Moyen de paiement
 

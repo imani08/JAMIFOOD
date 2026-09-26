@@ -5,13 +5,28 @@ import helmet from 'helmet';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
+  const production = process.env.NODE_ENV === 'production';
+  const webOrigins = (process.env.WEB_ORIGIN ?? (production ? '' : 'http://localhost:3000'))
+    .split(',').map(origin => origin.trim()).filter(Boolean);
+  const idleMinutes = Number(process.env.SESSION_IDLE_MINUTES ?? 30);
+  if (!Number.isInteger(idleMinutes) || idleMinutes < 5 || idleMinutes > 480) {
+    throw new Error('SESSION_IDLE_MINUTES doit être un nombre entier de 5 à 480 minutes.');
+  }
+  if (production && process.env.COOKIE_SECURE !== 'true') {
+    throw new Error('COOKIE_SECURE=true est obligatoire en production.');
+  }
+  if (production && (!webOrigins.length || webOrigins.includes('*') || webOrigins.some(origin => !/^https:\/\//i.test(origin)))) {
+    throw new Error('WEB_ORIGIN doit contenir une liste explicite d’origines HTTPS en production.');
+  }
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   app.use(helmet());
-  app.enableCors({ origin: process.env.WEB_ORIGIN?.split(',') ?? ['http://localhost:3000'], credentials: true });
+  app.enableCors({ origin: webOrigins, credentials: true });
   app.setGlobalPrefix('api/v1');
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));
-  const config = new DocumentBuilder().setTitle('JAMI FOOD API').setVersion('1.0').addBearerAuth().build();
-  SwaggerModule.setup('api/docs', app, SwaggerModule.createDocument(app, config));
+  if (!production) {
+    const config = new DocumentBuilder().setTitle('JAMI FOOD API').setVersion('1.0').addBearerAuth().build();
+    SwaggerModule.setup('api/docs', app, SwaggerModule.createDocument(app, config));
+  }
   await app.listen(Number(process.env.API_PORT ?? 3001), process.env.API_HOST ?? '127.0.0.1');
   Logger.log('JAMI FOOD API started', 'Bootstrap');
 }

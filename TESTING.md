@@ -10,6 +10,13 @@ pnpm lint
 pnpm build
 ```
 
+Suite HTTP/PostgreSQL isolée (Docker `jami-food-dev-db` démarré et `.env` local
+configuré) :
+
+```text
+pnpm --filter @jami/api test:integration
+```
+
 La suite d'intégration doit créer une base dédiée, jamais utiliser la base de
 production. Les cas prioritaires à automatiser avant toute mise en production :
 
@@ -24,4 +31,7 @@ production. Les cas prioritaires à automatiser avant toute mise en production :
   encaissement.
 - R09 : ancien prix/taux conservé après une nouvelle version.
 - R10 clôture et R11 refus RBAC.
+- RBAC multi-rôles : annulation, accès abonnements/clients, rapports, paiements,
+  remboursements, origine CSRF et affectation/livraison avec UUID d’un autre
+  utilisateur.
 - R12 : outbox Offline répétée, pertes LAN/redémarrage et conflits visibles.

@@ -12,7 +12,8 @@ export async function mutate(db: PrismaService, scope: string, key: string | und
   if (!key || key.length < 8 || key.length > 128) throw new DomainError('IDEMPOTENCY_KEY_REQUIRED', 'Une clé d’idempotence de 8 à 128 caractères est requise.', 400);
   const requestHash = createHash('sha256').update(canonical({ actorId, input })).digest('hex');
   return db.$transaction(async tx => {
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${scope + ':' + key}, 0))`;
+    // PostgreSQL returns void; execute without asking Prisma to deserialize it.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${scope + ':' + key}, 0))`;
     const cached = await tx.idempotencyRecord.findUnique({ where: { scope_key: { scope, key } } });
     if (cached) {
       if (cached.requestHash !== requestHash) throw new DomainError('IDEMPOTENCY_KEY_REUSED', 'Cette clé est associée à une autre opération.', 409);

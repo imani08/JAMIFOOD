@@ -1,6 +1,8 @@
-﻿'use client';
+'use client';
 
 import { useState } from 'react';
+import { apiForm } from '../../lib/api';
+import { ProductImage } from '../../components/product-image';
 
 import {
   api,
@@ -48,6 +50,7 @@ type ProductPrice = {
 };
 
 type Product = {
+  imageUrl: string | null;
   id: string;
   sku: string | null;
   name: string;
@@ -73,6 +76,7 @@ function ProductEditor({
   clientCategories: ClientCategory[];
 }) {
   const action = useAction();
+  const [imageUrl, setImageUrl] = useState(product.imageUrl ?? '');
 
   const [sku, setSku] =
     useState(product.sku ?? '');
@@ -136,7 +140,7 @@ function ProductEditor({
         api(
           `/commercial/products/${product.id}`,
           {
-            sku,
+            imageUrl: imageUrl || undefined,
             name,
             categoryId,
             description,
@@ -146,7 +150,7 @@ function ProductEditor({
             variantsDescription,
           },
         ),
-      'Produit modifiÃ©.',
+      'Produit modifié.',
     );
   }
 
@@ -160,8 +164,8 @@ function ProductEditor({
           },
         ),
       product.active
-        ? 'Produit dÃ©sactivÃ©.'
-        : 'Produit rÃ©activÃ©.',
+        ? 'Produit désactivé.'
+        : 'Produit réactivé.',
     );
   }
 
@@ -176,7 +180,7 @@ function ProductEditor({
           },
         ),
       product.available
-        ? 'Produit marquÃ© indisponible.'
+        ? 'Produit marqué indisponible.'
         : 'Produit de nouveau disponible.',
     );
   }
@@ -195,7 +199,7 @@ function ProductEditor({
       return;
     }
 
-    await action.run(
+    const saved = await action.run(
       () =>
         api(
           `/commercial/products/${product.id}/prices`,
@@ -209,20 +213,20 @@ function ProductEditor({
             ).toISOString(),
           },
         ),
-      'Nouvelle version tarifaire enregistrÃ©e.',
+      'Nouvelle version tarifaire enregistrée.',
     );
 
-    setAmount('');
-    setEffectiveFrom('');
+    if(saved) { setAmount(''); setEffectiveFrom(''); }
   }
 
   return (
     <details className="card section">
       <summary>
+        <ProductImage value={product.imageUrl} name={product.name} />
         <strong>{product.name}</strong>
-        {' Â· '}
+        {' · '}
         {product.sku}
-        {' Â· '}
+        {' · '}
         <span className="badge">
           {product.category.label}
         </span>
@@ -248,12 +252,25 @@ function ProductEditor({
       <div className="two-columns section">
         <section>
           <h3>Fiche produit</h3>
+          <ProductImage value={imageUrl} name={name} />
+          <label>Remplacer l’image (JPG, PNG, WEBP, 5 Mo maximum)
+            <input type="file" accept="image/jpeg,image/png,image/webp" disabled={action.busy} onChange={async event => {
+              const file = event.target.files?.[0]; if (!file) return;
+              const body = new FormData(); body.append('image', file);
+              await action.run(async () => {
+                const image = await apiForm<{url:string}>('/commercial/product-images', body);
+                await api(`/commercial/products/${product.id}`, {imageUrl:image.url});
+                setImageUrl(image.url); return image;
+              }, 'Image enregistrée.');
+            }} />
+          </label>
 
           <div className="form-grid">
             <label>
               Code / SKU
               <input
                 value={sku}
+                disabled
                 onChange={(event) =>
                   setSku(
                     event.target.value,
@@ -275,7 +292,7 @@ function ProductEditor({
             </label>
 
             <label>
-              CatÃ©gorie
+              Catégorie
               <select
                 value={categoryId}
                 onChange={(event) =>
@@ -303,7 +320,7 @@ function ProductEditor({
             </label>
 
             <label>
-              UnitÃ© de vente
+              Unité de vente
               <input
                 value={saleUnit}
                 onChange={(event) =>
@@ -311,7 +328,7 @@ function ProductEditor({
                     event.target.value,
                   )
                 }
-                placeholder="portion, bouteille, piÃ¨ce..."
+                placeholder="portion, bouteille, pièce..."
               />
             </label>
           </div>
@@ -337,7 +354,7 @@ function ProductEditor({
                   event.target.value,
                 )
               }
-              placeholder="Ex. riz, viande, lÃ©gumes..."
+              placeholder="Ex. riz, viande, légumes..."
             />
           </label>
 
@@ -390,8 +407,8 @@ function ProductEditor({
               disabled={action.busy}
             >
               {product.active
-                ? 'DÃ©sactiver'
-                : 'RÃ©activer'}
+                ? 'Désactiver'
+                : 'Réactiver'}
             </button>
           </div>
         </section>
@@ -401,7 +418,7 @@ function ProductEditor({
 
           <form onSubmit={addPrice}>
             <label>
-              CatÃ©gorie client
+              Catégorie client
               <select
                 value={priceCategory}
                 onChange={(event) =>
@@ -412,7 +429,7 @@ function ProductEditor({
                 required
               >
                 <option value="">
-                  Choisirâ€¦
+                  Choisir…
                 </option>
 
                 {clientCategories
@@ -496,7 +513,7 @@ function ProductEditor({
 
           {!product.prices.length && (
             <p className="empty">
-              Aucun tarif enregistrÃ©.
+              Aucun tarif enregistré.
             </p>
           )}
 
@@ -525,7 +542,7 @@ function ProductEditor({
                         <th>Version</th>
                         <th>Prix</th>
                         <th>Prise d'effet</th>
-                        <th>Ã‰tat</th>
+                        <th>État</th>
                       </tr>
                     </thead>
 
@@ -596,6 +613,7 @@ export default function Products() {
     );
 
   const createAction = useAction();
+  const [preview, setPreview] = useState<string | null>(null);
   const categoryAction = useAction();
   const bulkAction = useAction();
 
@@ -626,11 +644,13 @@ export default function Products() {
 
     const result =
       await createAction.run(
-        () =>
-          api('/commercial/products', {
-            sku: String(
-              data.get('sku') ?? '',
-            ),
+        async () => {
+          const file = data.get('image');
+          if (!(file instanceof File) || !file.size) throw new Error('Sélectionnez une image du produit.');
+          const upload = new FormData(); upload.append('image', file);
+          const image = await apiForm<{url:string}>('/commercial/product-images', upload);
+          return api('/commercial/products', {
+            imageUrl: image.url,
             name: String(
               data.get('name') ?? '',
             ),
@@ -663,12 +683,13 @@ export default function Products() {
                   'variantsDescription',
                 ) ?? '',
               ),
-          }),
-        'Produit crÃ©Ã©.',
+          }); },
+        'Produit créé.',
       );
 
     if (result) {
       form.reset();
+      setPreview(null);
     }
   }
 
@@ -695,7 +716,7 @@ export default function Products() {
               ),
             },
           ),
-        'CatÃ©gorie crÃ©Ã©e.',
+        'Catégorie créée.',
       );
 
     if (result) {
@@ -755,7 +776,7 @@ export default function Products() {
               changes,
             },
           ),
-        `${changes.length} tarif(s) enregistrÃ©(s).`,
+        `${changes.length} tarif(s) enregistré(s).`,
       );
 
     if (result) {
@@ -768,7 +789,7 @@ export default function Products() {
     <>
       <Heading
         title="Catalogue & tarifs"
-        subtitle="Produits, disponibilitÃ© et historique des prix par catÃ©gorie de client."
+        subtitle="Produits, disponibilité et historique des prix par catégorie de client."
       />
 
       <div className="two-columns">
@@ -777,6 +798,14 @@ export default function Products() {
           onSubmit={createProduct}
         >
           <h2>Nouveau produit</h2>
+          <label>Image du produit (JPG, PNG, WEBP, 5 Mo maximum)
+            <input name="image" type="file" accept="image/jpeg,image/png,image/webp" required onChange={event => {
+              const file=event.target.files?.[0];
+              if(!file){setPreview(null);return;}
+              const reader=new FileReader();reader.onload=()=>setPreview(typeof reader.result==='string'?reader.result:null);reader.readAsDataURL(file);
+            }} />
+          </label>
+          {preview && <img src={preview} alt="Aperçu du produit" style={{width:160,maxWidth:'100%',height:120,objectFit:'cover'}} />}
 
           <Feedback
             error={createAction.error}
@@ -791,7 +820,7 @@ export default function Products() {
               <input
                 name="sku"
                 placeholder="REPAS-001"
-                required
+                disabled
               />
             </label>
 
@@ -804,13 +833,13 @@ export default function Products() {
             </label>
 
             <label>
-              CatÃ©gorie
+              Catégorie
               <select
                 name="categoryId"
                 required
               >
                 <option value="">
-                  Choisirâ€¦
+                  Choisir…
                 </option>
 
                 {categories.data
@@ -830,7 +859,7 @@ export default function Products() {
             </label>
 
             <label>
-              UnitÃ© de vente
+              Unité de vente
               <input
                 name="saleUnit"
                 defaultValue="portion"
@@ -868,7 +897,7 @@ export default function Products() {
               createAction.busy
             }
           >
-            CrÃ©er le produit
+            Créer le produit
           </button>
         </form>
 
@@ -877,7 +906,7 @@ export default function Products() {
           onSubmit={createCategory}
         >
           <h2>
-            CatÃ©gories de produits
+            Catégories de produits
           </h2>
 
           <Feedback
@@ -923,7 +952,7 @@ export default function Products() {
             </label>
 
             <label>
-              LibellÃ©
+              Libellé
               <input
                 name="label"
                 placeholder="Boissons"
@@ -937,7 +966,7 @@ export default function Products() {
                 categoryAction.busy
               }
             >
-              Ajouter la catÃ©gorie
+              Ajouter la catégorie
             </button>
           </div>
         </form>
@@ -948,13 +977,13 @@ export default function Products() {
         onSubmit={submitBulkPrices}
       >
         <h2>
-          Modification groupÃ©e des prix
+          Modification groupée des prix
         </h2>
 
         <p className="muted">
           Permet d'enregistrer plusieurs
-          tarifs dans une seule opÃ©ration
-          contrÃ´lÃ©e.
+          tarifs dans une seule opération
+          contrôlée.
         </p>
 
         <Feedback
@@ -975,7 +1004,7 @@ export default function Products() {
               required
             >
               <option value="">
-                Choisirâ€¦
+                Choisir…
               </option>
 
               {products.data
@@ -1058,7 +1087,7 @@ export default function Products() {
                       }),
                     )
                   }
-                  placeholder="Laisser vide si inchangÃ©"
+                  placeholder="Laisser vide si inchangé"
                 />
               </label>
             ))}

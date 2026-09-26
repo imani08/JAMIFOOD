@@ -9,7 +9,7 @@ process.loadEnvFile(path.join(root,'.env'));
 const testName='jami_test_'+Date.now();
 const url=new URL(process.env.DATABASE_URL);url.pathname='/'+testName;
 process.env.DATABASE_URL=url.toString();process.env.NODE_ENV='test';process.env.SEED_DEMO='true';process.env.WEB_ORIGIN='http://localhost:3000';
-let app,db,base,cookie,caissierCookie,session,products,order,client,sub,stockItem,purchase,closing;
+let app,db,base,cookie,caissierCookie,cuisineCookie,courierCookie,stockCookie,adminCookie,session,products,order,client,sub,stockItem,purchase,closing;
 const key=()=>randomUUID();
 async function request(route,body,idem=key(),auth=cookie){const response=await fetch(base+route,{method:body===undefined?'GET':'POST',headers:{'content-type':'application/json',origin:'http://localhost:3000','x-jami-request':'1','idempotency-key':idem,...(auth?{cookie:auth}:{})},...(body===undefined?{}:{body:JSON.stringify(body)})});const result=await response.json();return{status:response.status,...result,cookie:response.headers.get('set-cookie')?.split(';')[0]};}
 async function ok(route,body,idem,auth){const r=await request(route,body,idem,auth);assert.ok(r.success,JSON.stringify(r));return r.data;}
@@ -21,13 +21,40 @@ before(async()=>{
  app=await NestFactory.create(AppModule,{logger:false});app.setGlobalPrefix('api/v1');await app.listen(0,'127.0.0.1');base=(await app.getUrl())+'/api/v1';db=app.get(PrismaService);
  cookie=(await request('/auth/login',{username:'direction.demo',password:process.env.DEMO_PASSWORD},key(),null)).cookie;assert.ok(cookie);
  caissierCookie=(await request('/auth/login',{username:'caissier.demo',password:process.env.DEMO_PASSWORD},key(),null)).cookie;
+ cuisineCookie=(await request('/auth/login',{username:'cuisine.demo',password:process.env.DEMO_PASSWORD},key(),null)).cookie;
+ courierCookie=(await request('/auth/login',{username:'livreur.demo',password:process.env.DEMO_PASSWORD},key(),null)).cookie;
+ stockCookie=(await request('/auth/login',{username:'stock.demo',password:process.env.DEMO_PASSWORD},key(),null)).cookie;
+ adminCookie=(await request('/auth/login',{username:'admintech.demo',password:process.env.DEMO_PASSWORD},key(),null)).cookie;
 }, {timeout:60000});
 after(async()=>{if(app)await app.close();execFileSync('docker',['exec','jami-food-dev-db','dropdb','-U','jami','--if-exists',testName]);});
-test('Authentification obligatoire et protections CSRF',async()=>{assert.equal((await request('/clients',undefined,key(),null)).status,401);const r=await fetch(base+'/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:'direction.demo',password:process.env.DEMO_PASSWORD})});assert.equal(r.status,403);});
+test('Authentification obligatoire, CSRF et origine étrangère',async()=>{assert.equal((await request('/clients',undefined,key(),null)).status,401);const r=await fetch(base+'/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:'direction.demo',password:process.env.DEMO_PASSWORD})});assert.equal(r.status,403);const foreign=await fetch(base+'/auth/logout',{method:'POST',headers:{cookie,origin:'https://foreign.example','x-jami-request':'1','content-type':'application/json'},body:'{}'});assert.equal(foreign.status,403);});
 test('R11 caissier refusé pour taux, validation et exports',async()=>{assert.equal((await request('/exchange-rates',{rate:'2600',source:'test',effectiveFrom:new Date().toISOString()},key(),caissierCookie)).status,403);assert.equal((await request('/cash/closings/'+randomUUID()+'/validate',{},key(),caissierCookie)).status,403);});
+test('RBAC refusé avant lecture objet et opérations financières',async()=>{
+ const cases=[
+  ['/orders/'+randomUUID()+'/cancel',{},caissierCookie],
+  ['/subscriptions/'+randomUUID(),undefined,cuisineCookie],
+  ['/clients/'+randomUUID(),undefined,cuisineCookie],
+  ['/reports',undefined,courierCookie],
+  ['/stock/purchases/'+randomUUID()+'/payments',{cashSessionId:randomUUID(),amount:'1'},stockCookie],
+  ['/orders/payments/'+randomUUID()+'/refund',{cashSessionId:randomUUID(),amount:'1',reason:'test'},adminCookie],
+ ];
+ for(const [route,body,auth] of cases){const result=await request(route,body,key(),auth);assert.equal(result.status,403,route);assert.equal(Object.hasOwn(result,'data'),false,route);}
+});
 test('Ouverture de caisse et catalogue tarifé côté serveur',async()=>{const registers=await ok('/cash/registers');session=await ok('/cash/open',{cashRegisterId:registers[0].id,openingUsd:'0',openingCdf:'10000'});products=await ok('/products');assert.equal(products.length,2);});
 test('R07 vente 9700 CDF, reçu 5 USD, rendu 2800 CDF et idempotence',async()=>{const body={categoryCode:'ETUDIANT_EXTERNE',serviceMode:'DINE_IN',currency:'CDF',items:products.map(p=>({productId:p.id,quantity:1}))};const k=key();const [a,b]=await Promise.all([ok('/orders',body,k),ok('/orders',body,k)]);assert.equal(a.id,b.id);order=a;assert.equal(order.totalAmount,'9700');const pk=key(),pay={cashSessionId:session.id,method:'CASH',receivedAmount:'5',receivedCurrency:'USD'};const p=await ok('/orders/'+order.id+'/payments',pay,pk);assert.equal(p.changeAmount,'2800');assert.equal((await ok('/orders/'+order.id+'/payments',pay,pk)).id,p.id);assert.equal(await db.cashMovement.count({where:{paymentId:p.id}}),2);assert.equal((await request('/orders/'+order.id+'/payments',pay)).status,409);assert.equal((await request('/orders', {...body,items:[body.items[0]]},k)).status,409);});
 test('POS → bon cuisine → préparation → prêt → remise unique concurrente',async()=>{const queue=await ok('/kitchen');assert.equal(queue[0].number,order.number);assert.equal(queue[0].kitchenTicket.items.length,2);assert.equal(queue[0].totalAmount,undefined);await ok('/kitchen/'+order.id+'/status',{status:'PREPARING'});await ok('/kitchen/'+order.id+'/status',{status:'READY'});const result=await Promise.all([request('/kitchen/'+order.id+'/status',{status:'SERVED'}),request('/kitchen/'+order.id+'/status',{status:'SERVED'})]);assert.equal(result.filter(r=>r.success).length,1);assert.equal(result.find(r=>!r.success).error.code,'ORDER_ALREADY_SERVED');assert.equal(await db.auditLog.count({where:{entityId:order.id,action:'ORDER_SERVED'}}),1);assert.equal((await ok('/orders/'+order.id+'/receipt')).number,order.number);});
+test('R06 livraison affectée : autre rôle refusé, livreur autorisé',async()=>{
+ const job=await ok('/orders',{categoryCode:'ETUDIANT_EXTERNE',serviceMode:'DELIVERY',currency:'CDF',items:[{productId:products[0].id,quantity:1}]});
+ await ok('/orders/'+job.id+'/payments',{cashSessionId:session.id,method:'CASH',receivedAmount:job.totalAmount,receivedCurrency:'CDF'});
+ await ok('/kitchen/'+job.id+'/status',{status:'PREPARING'});await ok('/kitchen/'+job.id+'/status',{status:'READY'});
+ const courier=await db.user.findUniqueOrThrow({where:{username:'livreur.demo'},select:{id:true}});
+ await ok('/delivery/'+job.id+'/assign',{courierId:courier.id});
+ assert.equal((await ok('/delivery',undefined,undefined,courierCookie)).some(item=>item.id===job.id),true);
+ assert.equal((await ok('/delivery',undefined,undefined,cookie)).some(item=>item.id===job.id),false);
+ assert.equal((await request('/delivery/'+job.id+'/status',{status:'DELIVERED',physicallyHandedOver:true},key(),cookie)).status,403);
+ await ok('/delivery/'+job.id+'/status',{status:'OUT_FOR_DELIVERY'},undefined,courierCookie);
+ await ok('/delivery/'+job.id+'/status',{status:'DELIVERED',physicallyHandedOver:true},undefined,courierCookie);
+});
 test('R08 paiement externe en attente puis confirmation répétée',async()=>{const o=await ok('/orders',{categoryCode:'ETUDIANT_EXTERNE',serviceMode:'TAKEAWAY',currency:'CDF',items:[{productId:products[0].id,quantity:1}]});const p=await ok('/orders/'+o.id+'/payments',{cashSessionId:session.id,method:'MPESA',receivedAmount:o.totalAmount,receivedCurrency:'CDF',externalReference:'TEST-'+key()});assert.equal(p.status,'PENDING');assert.equal(await db.cashMovement.count({where:{paymentId:p.id}}),0);await Promise.all([ok('/orders/payments/'+p.id+'/confirm',{}),ok('/orders/payments/'+p.id+'/confirm',{})]);assert.equal(await db.cashMovement.count({where:{paymentId:p.id}}),1);});
 test('R09 nouveau tarif sans réécriture de l’ancienne vente',async()=>{const before=await db.order.findUniqueOrThrow({where:{id:order.id}});const product=products[0];await ok('/pricing/'+product.prices[0].id,{amount:'9000',currency:'CDF'});const n=await ok('/orders',{categoryCode:'ETUDIANT_EXTERNE',serviceMode:'DINE_IN',currency:'CDF',items:[{productId:product.id,quantity:1}]});assert.equal(n.totalAmount,'9000');assert.equal((await db.order.findUniqueOrThrow({where:{id:order.id}})).totalAmount.toString(),before.totalAmount.toString());});
 test('R01 souscription datée D+29, paiement et code opaque',async()=>{const cat=(await ok('/clients/categories'))[0];client=await ok('/clients',{firstName:'Recette',lastName:key(),categoryId:cat.id});const plan=(await ok('/subscriptions/plans')).find(p=>p.name==='Repas');const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Kinshasa'}).format(new Date());sub=await ok('/subscriptions',{clientId:client.id,planVersionId:plan.versions[0].id,startsOn:today});assert.equal((new Date(sub.endsOn)-new Date(sub.startsOn))/86400000,29);await ok('/subscriptions/'+sub.id+'/payments',{cashSessionId:session.id,method:'CASH',receivedAmount:sub.amount,receivedCurrency:'USD'});const qr=await ok('/clients/'+client.id+'/qr',{});assert.ok(qr.token.startsWith('JAMI-'));await ok('/clients/scan',{token:qr.token});assert.equal(await db.mealConsumption.count(),0);});

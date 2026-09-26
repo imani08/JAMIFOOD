@@ -19,6 +19,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import sharp from 'sharp';
 
 import { Require } from './auth';
 import { DomainError } from './http';
@@ -100,6 +101,16 @@ export class ProductImagesController {
         400,
       );
     }
+    let safeImage: Buffer;
+    try {
+      const decoder = sharp(file.buffer, {limitInputPixels: 25_000_000, animated: false, failOn:'warning'});
+      const metadata = await decoder.metadata();
+      if (!['jpeg','png','webp'].includes(metadata.format ?? '') || `image/${metadata.format}` !== file.mimetype) throw new Error('Format mismatch');
+      // Reencode to remove metadata and trailing non-image content.
+      safeImage = await decoder.rotate().resize({width:1600,height:1600,fit:'inside',withoutEnlargement:true}).webp({quality:85}).toBuffer();
+    } catch {
+      throw new DomainError('PRODUCT_IMAGE_TYPE_INVALID', 'Image invalide ou trop volumineuse. Formats autorisés : JPG, PNG et WEBP.',400);
+    }
 
     const directory = imageDirectory();
 
@@ -108,11 +119,11 @@ export class ProductImagesController {
     });
 
     const filename =
-      `${randomUUID()}.${type.extension}`;
+      `${randomUUID()}.webp`;
 
     await writeFile(
       resolve(directory, filename),
-      file.buffer,
+      safeImage,
       {
         flag: 'wx',
       },

@@ -392,12 +392,16 @@ model Product {
   baseComposition     String?
   optionsDescription  String?
   variantsDescription String?
+  stockMode           String   @default("PRODUCTION")
+  stockItemId         String?  @db.Uuid
+  stockQuantity       Decimal  @default(1) @db.Decimal(18, 3)
   available           Boolean  @default(true)
   active              Boolean  @default(true)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @default(now()) @updatedAt
 
   category   ProductCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  stockItem  StockItem? @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
   prices     ProductPrice[]
   orderItems OrderItem[]
   menuItems  MenuItem[]
@@ -609,6 +613,7 @@ model Payment {
   status               PaymentStatus      @default(PENDING)
   method               String
   operator             String?
+  refunds              Refund[]
   referenceCurrency    Currency
   amountDue            Decimal            @db.Decimal(18, 2)
   receivedAmount       Decimal            @db.Decimal(18, 2)
@@ -660,9 +665,27 @@ model CashSession {
   cashRegister   CashRegister      @relation(fields: [cashRegisterId], references: [id], onDelete: Restrict)
   movements      CashMovement[]
   closing        CashClosing?
+  refunds        Refund[]
 
   @@index([cashRegisterId, status])
   @@index([cashierId, status])
+}
+
+model Refund {
+  id                String   @id @default(uuid()) @db.Uuid
+  originalPaymentId String   @db.Uuid
+  cashSessionId     String   @db.Uuid
+  amount            Decimal  @db.Decimal(18, 2)
+  currency          Currency
+  reason            String
+  createdById       String   @db.Uuid
+  createdAt         DateTime @default(now())
+
+  originalPayment Payment     @relation(fields: [originalPaymentId], references: [id], onDelete: Restrict)
+  cashSession     CashSession @relation(fields: [cashSessionId], references: [id], onDelete: Restrict)
+
+  @@index([originalPaymentId])
+  @@index([cashSessionId, createdAt])
 }
 
 model CashMovement {
@@ -784,6 +807,7 @@ model SettingHistory {
 }
 
 model StockItem {
+  products Product[]
   id                String             @id @default(uuid()) @db.Uuid
   code              String             @unique
   name              String
@@ -791,9 +815,27 @@ model StockItem {
   quantity          Decimal            @default(0) @db.Decimal(18, 3)
   alertThreshold    Decimal            @default(0) @db.Decimal(18, 3)
   active            Boolean            @default(true)
+  lots              StockLot[]
   movements         StockMovement[]
   conversions       UnitConversion[]
   recipeIngredients RecipeIngredient[]
+  purchaseLines     PurchaseLine[]
+}
+
+model StockLot {
+  id          String    @id @default(uuid()) @db.Uuid
+  stockItemId String    @db.Uuid
+  batchNumber String
+  quantity    Decimal   @default(0) @db.Decimal(18, 3)
+  expiresAt   DateTime? @db.Date
+  receivedAt  DateTime  @default(now())
+  active      Boolean   @default(true)
+
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+
+  @@unique([stockItemId, batchNumber])
+  @@index([expiresAt])
+  @@index([stockItemId, active])
 }
 
 model UnitConversion {
@@ -826,18 +868,6 @@ model Supplier {
   name      String
   phone     String?
   purchases Purchase[]
-}
-
-model Purchase {
-  id         String            @id @default(uuid()) @db.Uuid
-  supplierId String            @db.Uuid
-  amount     Decimal           @db.Decimal(18, 2)
-  currency   Currency
-  paidAmount Decimal           @default(0) @db.Decimal(18, 2)
-  createdAt  DateTime          @default(now())
-  supplier   Supplier          @relation(fields: [supplierId], references: [id], onDelete: Restrict)
-  receipts   GoodsReceipt[]
-  payments   SupplierPayment[]
 }
 
 model GoodsReceipt {
@@ -890,12 +920,47 @@ model RecipeIngredient {
 }
 
 model Production {
-  id              String        @id @default(uuid()) @db.Uuid
-  recipeVersionId String        @db.Uuid
-  quantity        Decimal       @db.Decimal(18, 3)
-  actorId         String        @db.Uuid
-  producedAt      DateTime      @default(now())
-  recipeVersion   RecipeVersion @relation(fields: [recipeVersionId], references: [id], onDelete: Restrict)
+  id              String   @id @default(uuid()) @db.Uuid
+  recipeVersionId String   @db.Uuid
+  forecastId      String?  @db.Uuid
+  quantity        Decimal  @db.Decimal(18, 3)
+  actorId         String   @db.Uuid
+  producedAt      DateTime @default(now())
+
+  recipeVersion RecipeVersion       @relation(fields: [recipeVersionId], references: [id], onDelete: Restrict)
+  forecast      ProductionForecast? @relation(fields: [forecastId], references: [id], onDelete: SetNull)
+
+  @@index([forecastId])
+}
+
+model ProductionForecast {
+  id String @id @default(uuid()) @db.Uuid
+
+  businessDate DateTime @db.Date
+  serviceCode  String
+
+  theoreticalRights Int     @default(0)
+  reservations      Int     @default(0)
+  directOrders      Decimal @default(0) @db.Decimal(18, 3)
+
+  estimatedAttendance Decimal @default(0) @db.Decimal(18, 3)
+
+  calculatedQuantity Decimal @default(0) @db.Decimal(18, 3)
+  adjustment         Decimal @default(0) @db.Decimal(18, 3)
+  finalQuantity      Decimal @default(0) @db.Decimal(18, 3)
+
+  lostQuantity Decimal @default(0) @db.Decimal(18, 3)
+
+  adjustmentReason String?
+  adjustedById     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  productions Production[]
+
+  @@unique([businessDate, serviceCode])
+  @@index([businessDate])
 }
 
 model Inventory {
@@ -909,4 +974,39 @@ model Inventory {
   status        String    @default("PENDING")
   createdAt     DateTime  @default(now())
   validatedAt   DateTime?
+}
+
+model Purchase {
+  id               String    @id @default(uuid()) @db.Uuid
+  supplierId       String    @db.Uuid
+  reference        String?   @unique
+  invoiceNumber    String?
+  invoiceDate      DateTime? @db.Date
+  invoiceObjectKey String?
+  amount           Decimal   @db.Decimal(18, 2)
+  currency         Currency
+  paidAmount       Decimal   @default(0) @db.Decimal(18, 2)
+  createdAt        DateTime  @default(now())
+
+  supplier Supplier          @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  lines    PurchaseLine[]
+  receipts GoodsReceipt[]
+  payments SupplierPayment[]
+
+  @@index([supplierId, createdAt])
+}
+
+model PurchaseLine {
+  id               String  @id @default(uuid()) @db.Uuid
+  purchaseId       String  @db.Uuid
+  stockItemId      String  @db.Uuid
+  orderedQuantity  Decimal @db.Decimal(18, 3)
+  receivedQuantity Decimal @default(0) @db.Decimal(18, 3)
+  unit             String
+
+  purchase  Purchase  @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+
+  @@unique([purchaseId, stockItemId])
+  @@index([stockItemId])
 }

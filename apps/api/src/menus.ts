@@ -615,6 +615,7 @@ export class MenusController {
             tx,
             versionId,
           );
+        await tx.$queryRaw`SELECT id FROM "Menu" WHERE id = ${version.menuId}::uuid FOR UPDATE`;
 
         const calendar =
           await tx.setting.findUnique({

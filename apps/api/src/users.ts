@@ -15,7 +15,17 @@ import { pageSchema, uuid } from '@jami/validation';
 import { AuthRequest, Require } from './auth';
 import { PrismaService } from './prisma.service';
 import { DomainError } from './http';
-import { mutate } from './transaction';
+import { mutate, Tx } from './transaction';
+
+async function restrictDelegation(tx: Tx, actor: AuthRequest['actor'], roleCodes: string[]) {
+  const grants=await tx.rolePermission.findMany({where:{role:{code:{in:roleCodes}}},include:{permission:true}});
+  if(grants.some(grant=>!actor.permissions.includes(grant.permission.code))) throw new DomainError('ROLE_DELEGATION_FORBIDDEN','Vous ne pouvez pas attribuer ou administrer des permissions que vous ne possédez pas.',403);
+}
+async function restrictTarget(tx: Tx, actor: AuthRequest['actor'], id: string) {
+  await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${id}::uuid FOR UPDATE`;
+  const roles=await tx.userRole.findMany({where:{userId:id},include:{role:true}});
+  await restrictDelegation(tx,actor,roles.map(entry=>entry.role.code));
+}
 
 const roleCodesSchema = z
   .array(z.string().trim().min(1).max(80))
@@ -212,6 +222,7 @@ export class UsersController {
         }
 
         const uniqueRoleCodes = [...new Set(body.roleCodes)];
+        await restrictDelegation(tx,req.actor,uniqueRoleCodes);
 
         const roles = await tx.role.findMany({
           where: {
@@ -323,7 +334,10 @@ export class UsersController {
           | undefined;
 
         if (body.roleCodes) {
+          await restrictTarget(tx,req.actor,id);
+          if(id===req.actor.id)throw new DomainError('SELF_ROLE_CHANGE_FORBIDDEN','Un autre administrateur habilité doit modifier vos rôles.',403);
           const uniqueRoleCodes = [...new Set(body.roleCodes)];
+          await restrictDelegation(tx,req.actor,uniqueRoleCodes);
 
           roles = await tx.role.findMany({
             where: {
@@ -436,6 +450,7 @@ export class UsersController {
         const before = await tx.user.findUnique({
           where: { id },
         });
+        await restrictTarget(tx,req.actor,id);
 
         if (!before) {
           throw new DomainError(
@@ -512,6 +527,7 @@ export class UsersController {
         const user = await tx.user.findUnique({
           where: { id },
         });
+        await restrictTarget(tx,req.actor,id);
 
         if (!user) {
           throw new DomainError(

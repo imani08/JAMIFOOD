@@ -16,6 +16,7 @@ import {
   ClientsService,
 } from './clients';
 import {
+  DeliveryController,
   KitchenController,
   OrdersController,
   OrdersService,
@@ -47,6 +48,7 @@ import { UsersController } from './users';
     ProductImagesController,
     MenusController,
     ClientPhotosController,
+    DeliveryController,
   ],
   providers: [
     PrismaService,

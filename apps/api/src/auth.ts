@@ -8,7 +8,7 @@ import { PrismaService } from './prisma.service';
 import { DomainError } from './http';
 export const Public = () => SetMetadata('public', true);
 export const Require = (...permissions: string[]) => SetMetadata('permissions', permissions);
-export type Actor = { id: string; username: string; firstName: string; lastName: string; permissions: string[] };
+export type Actor = { id: string; username: string; firstName: string; lastName: string; roles: string[]; permissions: string[] };
 export type AuthRequest = Request & { actor: Actor; sessionId: string; requestId: string };
 async function verifyPassword(stored: string, password: string) {
   if (!stored.startsWith('scrypt$')) return argon2.verify(stored, password);
@@ -52,7 +52,7 @@ export class AuthService {
     if (!session || session.user.status !== 'ACTIVE' || session.expiresAt <= new Date() || Date.now() - session.lastActivityAt.getTime() > Number(process.env.SESSION_IDLE_MINUTES ?? 30) * 60000) throw new DomainError('SESSION_EXPIRED', 'Votre session a expiré. Reconnectez-vous.', 401);
     await this.prisma.session.update({ where: { id: session.id }, data: { lastActivityAt: new Date() } });
     const u = session.user;
-    return { sessionId: session.id, actor: { id: u.id, username: u.username, firstName: u.firstName, lastName: u.lastName, permissions: [...new Set(u.roles.flatMap(r => r.role.permissions.map(p => p.permission.code)))] } };
+    return { sessionId: session.id, actor: { id: u.id, username: u.username, firstName: u.firstName, lastName: u.lastName, roles: u.roles.map(r => r.role.code), permissions: [...new Set(u.roles.flatMap(r => r.role.permissions.map(p => p.permission.code)))] } };
   }
   async logout(req: AuthRequest, res: Response) {
     await this.prisma.session.deleteMany({ where: { id: req.sessionId } });
@@ -79,7 +79,7 @@ export class AccessGuard implements CanActivate {
   async canActivate(context: ExecutionContext) {
     const req = context.switchToHttp().getRequest<AuthRequest>();
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
-      const allowed = (process.env.WEB_ORIGIN ?? 'http://localhost:3000').split(',');
+      const allowed = (process.env.WEB_ORIGIN ?? 'http://localhost:3000').split(',').map(origin => origin.trim()).filter(Boolean);
       if (!req.headers.origin || !allowed.includes(req.headers.origin) || req.headers['x-jami-request'] !== '1') throw new DomainError('CSRF_REJECTED', 'Origine de la requête non autorisée.', 403);
     }
     if (this.reflector.getAllAndOverride<boolean>('public', [context.getHandler(), context.getClass()])) return true;
@@ -93,7 +93,10 @@ export class AccessGuard implements CanActivate {
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
   @Public() @Post('login') login(@Body() body: unknown, @Req() req: Request, @Res({ passthrough: true }) res: Response) { return this.auth.login(body, req, res); }
+  @Require('auth.session')
   @Post('logout') logout(@Req() req: AuthRequest, @Res({ passthrough: true }) res: Response) { return this.auth.logout(req, res); }
+  @Require('auth.session')
   @Get('me') me(@Req() req: AuthRequest) { return { success: true, data: req.actor }; }
+  @Require('auth.password-change')
   @Post('password') password(@Req() req: AuthRequest, @Body() body: unknown, @Res({ passthrough: true }) res: Response) { return this.auth.changePassword(req, body, res); }
 }

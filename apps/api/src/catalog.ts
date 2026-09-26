@@ -61,6 +61,9 @@ const productCreateSchema = z
 
 const productUpdateSchema = z
   .object({
+    stockMode: z.enum(['PRODUCTION','DIRECT','NONE']).optional(),
+    stockItemId: uuid.nullable().optional(),
+    stockQuantity: z.string().regex(/^\d{1,10}(\.\d{1,3})?$/).refine(value=>Number(value)>0).optional(),
     name: z.string().trim().min(2).max(150).optional(),
     categoryId: uuid.optional(),
     description: z.string().trim().max(1000).optional(),
@@ -922,6 +925,9 @@ if (!category) {
 }
 
 const prefix = category.code.toUpperCase();
+// Serialize generated SKU allocation for this category, including different
+// idempotency keys, without rewriting existing product codes.
+await tx.$queryRaw`SELECT id FROM "ProductCategory" WHERE id = ${category.id}::uuid FOR UPDATE`;
 
 const existingProducts =
   await tx.product.findMany({
@@ -1652,156 +1658,443 @@ const product =
   // ============================================================
 
   @Require('audit.read')
-  @Get('audit')
-  async logs(@Query() query: unknown) {
-    const { page, limit } =
-      pageSchema.parse(query);
+@Get('audit')
+async logs(@Query() input: unknown) {
+  const query = pageSchema
+    .extend({
+      action: z
+        .string()
+        .trim()
+        .max(100)
+        .optional(),
 
-    return {
-      success: true,
-      data:
-        await this.db.auditLog.findMany({
-          take: limit,
-          skip: (page - 1) * limit,
-          orderBy: {
-            createdAt: 'desc',
-          },
-          select: {
-            id: true,
-            action: true,
-            entityType: true,
-            entityId: true,
-            actorId: true,
-            createdAt: true,
-            requestId: true,
-          },
-        }),
-      meta: {
-        page,
-        limit,
-        total:
-          await this.db.auditLog.count(),
-      },
-    };
+      entityType: z
+        .string()
+        .trim()
+        .max(100)
+        .optional(),
+
+      actorId: uuid.optional(),
+
+      from: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional(),
+
+      to: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional(),
+    })
+    .parse(input);
+
+  if (
+    query.from &&
+    query.to &&
+    query.from > query.to
+  ) {
+    throw new DomainError(
+      'INVALID_DATE_RANGE',
+      'La date de début doit être antérieure ou égale à la date de fin.',
+      400,
+    );
   }
+
+  const where:
+    Prisma.AuditLogWhereInput = {
+    ...(query.action
+      ? {
+          action: {
+            contains: query.action,
+            mode: 'insensitive',
+          },
+        }
+      : {}),
+
+    ...(query.entityType
+      ? {
+          entityType: {
+            contains:
+              query.entityType,
+            mode: 'insensitive',
+          },
+        }
+      : {}),
+
+    ...(query.actorId
+      ? {
+          actorId:
+            query.actorId,
+        }
+      : {}),
+
+    ...(query.q
+      ? {
+          OR: [
+            {
+              action: {
+                contains: query.q,
+                mode: 'insensitive',
+              },
+            },
+
+            {
+              entityType: {
+                contains: query.q,
+                mode: 'insensitive',
+              },
+            },
+
+            {
+              entityId: {
+                contains: query.q,
+                mode: 'insensitive',
+              },
+            },
+          ],
+        }
+      : {}),
+
+    ...(query.from ||
+    query.to
+      ? {
+          createdAt: {
+            ...(query.from
+              ? {
+                  gte: new Date(
+                    `${query.from}T00:00:00+01:00`,
+                  ),
+                }
+              : {}),
+
+            ...(query.to
+              ? {
+                  lte: new Date(
+                    `${query.to}T23:59:59.999+01:00`,
+                  ),
+                }
+              : {}),
+          },
+        }
+      : {}),
+  };
+
+  const [data, total] =
+    await this.db.$transaction([
+      this.db.auditLog.findMany({
+        where,
+
+        take: query.limit,
+
+        skip:
+          (query.page - 1) *
+          query.limit,
+
+        orderBy: {
+          createdAt: 'desc',
+        },
+
+        select: {
+          id: true,
+          action: true,
+          entityType: true,
+          entityId: true,
+          actorId: true,
+          createdAt: true,
+          requestId: true,
+          oldValue: true,
+          newValue: true,
+          metadata: true,
+          ip: true,
+          deviceId: true,
+
+          actor: {
+            select: {
+              username: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+        },
+      }),
+
+      this.db.auditLog.count({
+        where,
+      }),
+    ]);
+
+  return {
+    success: true,
+    data,
+
+    meta: {
+      page: query.page,
+      limit: query.limit,
+      total,
+    },
+  };
+}
 
   // ============================================================
   // RAPPORT ACTUEL
   // ============================================================
 
-  @Require('reports.read')
-  @Get('reports')
-  async reports() {
-    const today = new Date(localDate());
+ @Require('reports.read')
+@Get('reports')
+async reports(
+  @Query('from') from?: string,
+  @Query('to') to?: string,
+  @Query('serviceMode')
+  serviceMode?: string,
+) {
+  const query = z
+    .object({
+      from: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional(),
 
-    const [
+      to: z
+        .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/)
+        .optional(),
+
+      serviceMode: z
+        .enum([
+          'DINE_IN',
+          'TAKEAWAY',
+          'DELIVERY',
+        ])
+        .optional(),
+    })
+    .parse({
+      from: from || undefined,
+      to: to || undefined,
+      serviceMode:
+        serviceMode || undefined,
+    });
+
+  const startDate =
+    query.from ?? localDate();
+
+  const endDate =
+    query.to ?? startDate;
+
+  if (startDate > endDate) {
+    throw new DomainError(
+      'INVALID_DATE_RANGE',
+      'La date de début doit être antérieure ou égale à la date de fin.',
+      400,
+    );
+  }
+
+  const start = new Date(
+    `${startDate}T00:00:00+01:00`,
+  );
+
+  const end = new Date(
+    `${endDate}T23:59:59.999+01:00`,
+  );
+
+  const orderWhere:
+    Prisma.OrderWhereInput = {
+    businessDate: {
+      gte: new Date(startDate),
+      lte: new Date(endDate),
+    },
+
+    ...(query.serviceMode
+      ? {
+          serviceMode:
+            query.serviceMode,
+        }
+      : {}),
+  };
+
+  const [
+    sales,
+    payments,
+    served,
+    subscriptions,
+    expenses,
+    refunds,
+    cancelled,
+    pendingPayments,
+  ] = await Promise.all([
+    this.db.order.groupBy({
+      by: ['currency'],
+
+      where: {
+        ...orderWhere,
+
+        paymentRequired: true,
+
+        status: {
+          notIn: [
+            'RECEIVED',
+            'CANCELLED',
+          ],
+        },
+      },
+
+      _sum: {
+        totalAmount: true,
+      },
+
+      _count: true,
+    }),
+
+    this.db.payment.groupBy({
+      by: [
+        'receivedCurrency',
+        'method',
+      ],
+
+      where: {
+        status: 'CONFIRMED',
+
+        confirmedAt: {
+          gte: start,
+          lte: end,
+        },
+
+        ...(query.serviceMode
+          ? {
+              order: {
+                serviceMode:
+                  query.serviceMode,
+              },
+            }
+          : {}),
+      },
+
+      _sum: {
+        receivedAmount: true,
+        changeAmount: true,
+      },
+
+      _count: true,
+    }),
+
+    this.db.order.count({
+      where: {
+        ...orderWhere,
+
+        status: {
+          in: [
+            'SERVED',
+            'DELIVERED',
+          ],
+        },
+      },
+    }),
+
+    this.db.subscription.count({
+      where: {
+        status: {
+          in: [
+            'ACTIVE',
+            'SCHEDULED',
+          ],
+        },
+
+        startsOn: {
+          lte: new Date(endDate),
+        },
+
+        endsOn: {
+          gte: new Date(startDate),
+        },
+
+        balance: 0,
+      },
+    }),
+
+    this.db.expense.groupBy({
+      by: ['currency'],
+
+      where: {
+        occurredAt: {
+          gte: start,
+          lte: end,
+        },
+      },
+
+      _sum: {
+        amount: true,
+      },
+    }),
+
+    this.db.refund.groupBy({
+      by: ['currency'],
+
+      where: {
+        createdAt: {
+          gte: start,
+          lte: end,
+        },
+      },
+
+      _sum: {
+        amount: true,
+      },
+
+      _count: true,
+    }),
+
+    this.db.order.count({
+      where: {
+        ...orderWhere,
+        status: 'CANCELLED',
+      },
+    }),
+
+    this.db.payment.count({
+      where: {
+        status: 'PENDING',
+
+        createdAt: {
+          gte: start,
+          lte: end,
+        },
+
+        ...(query.serviceMode
+          ? {
+              order: {
+                serviceMode:
+                  query.serviceMode,
+              },
+            }
+          : {}),
+      },
+    }),
+  ]);
+
+  return {
+    success: true,
+
+    data: {
+      // Compatibilité avec la page actuelle.
+      date: startDate,
+
+      from: startDate,
+      to: endDate,
+
+      serviceMode:
+        query.serviceMode ?? null,
+
       sales,
       payments,
+      refunds,
+      expenses,
+
       served,
       subscriptions,
-      expenses,
-    ] = await Promise.all([
-      this.db.order.groupBy({
-        by: ['currency'],
-        where: {
-          businessDate: today,
-          paymentRequired: true,
-          status: {
-            notIn: [
-              'RECEIVED',
-              'CANCELLED',
-            ],
-          },
-        },
-        _sum: {
-          totalAmount: true,
-        },
-        _count: true,
-      }),
-
-      this.db.payment.groupBy({
-        by: [
-          'receivedCurrency',
-          'method',
-        ],
-        where: {
-          status: 'CONFIRMED',
-          confirmedAt: {
-            gte: new Date(
-              localDate() +
-                'T00:00:00+01:00',
-            ),
-          },
-        },
-        _sum: {
-          receivedAmount: true,
-          changeAmount: true,
-        },
-        _count: true,
-      }),
-
-      this.db.order.count({
-        where: {
-          businessDate: today,
-          status: {
-            in: [
-              'SERVED',
-              'DELIVERED',
-            ],
-          },
-        },
-      }),
-
-      this.db.subscription.count({
-        where: {
-          status: {
-            in: [
-              'ACTIVE',
-              'SCHEDULED',
-            ],
-          },
-          startsOn: {
-            lte: today,
-          },
-          endsOn: {
-            gte: today,
-          },
-          balance: 0,
-        },
-      }),
-
-      this.db.expense.groupBy({
-        by: ['currency'],
-        where: {
-          occurredAt: {
-            gte: new Date(
-              localDate() +
-                'T00:00:00+01:00',
-            ),
-          },
-        },
-        _sum: {
-          amount: true,
-        },
-      }),
-    ]);
-
-    return {
-      success: true,
-      data: {
-        date: localDate(),
-        sales,
-        payments,
-        served,
-        subscriptions,
-        expenses,
-        pendingPayments:
-          await this.db.payment.count({
-            where: {
-              status: 'PENDING',
-            },
-          }),
-      },
-    };
-  }
+      cancelled,
+      pendingPayments,
+    },
+  };
 }
+
+
+ }

@@ -19,6 +19,10 @@ services:
       context: .
       dockerfile: Dockerfile.api
     env_file: .env
+    environment:
+      PRODUCT_IMAGE_DIR: /app/storage/product-images
+    volumes:
+      - product_images:/app/storage/product-images
     depends_on:
       postgres:
         condition: service_healthy
@@ -39,4 +43,5 @@ services:
     ports:
       - "3000:3000"
 volumes:
+  product_images: {}
   postgres_data: {}

@@ -7,7 +7,7 @@ async function main() {
     DIRECTION: ['users.read','users.create','users.update','users.disable','clients.read','clients.create','clients.update','clients.archive','clients.merge','subscriptions.read','subscriptions.create','subscriptions.suspend','subscriptions.cancel','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','cash.refund','cash.adjust','sales.create','sales.read','orders.create','orders.read','orders.cancel','meal.validate','meal.correct','meal.exception','kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','delivery.read','delivery.confirm','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory','menus.read',
 'menus.manage',
 'menus.publish',],
-    RESPONSABLE_RESTAURANT: ['clients.read','clients.create','clients.update','subscriptions.read','subscriptions.create','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','sales.create','sales.read','orders.create','orders.read','meal.validate','kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','delivery.read','delivery.confirm','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory','menus.read',
+    RESPONSABLE_RESTAURANT: ['clients.read','clients.create','clients.update','subscriptions.read','subscriptions.create','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','sales.create','sales.read','orders.create','orders.read','meal.validate','kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','delivery.read','delivery.confirm','delivery.assign','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory','menus.read',
 'menus.manage',
 'menus.publish',],
     CAISSIER: ['clients.read','clients.create','subscriptions.read','subscriptions.create','cash.open','cash.close','cash.read','sales.create','sales.read','orders.create','orders.read','meal.validate','pricing.read'],
@@ -24,6 +24,9 @@ rolePermissions.DIRECTION = [
     Object.values(rolePermissions).flat(),
   ),
 ];
+  for (const [role, permissions] of Object.entries(rolePermissions)) {
+    if (role !== 'CLIENT') permissions.push('auth.session', 'auth.password-change');
+  }
   for (const code of [...new Set(Object.values(rolePermissions).flat())]) await db.permission.upsert({where:{code},update:{},create:{code,label:code}});
   for (const [code,permissions] of Object.entries(rolePermissions)) {
     const role=await db.role.upsert({where:{code},update:{},create:{code,label:code}});

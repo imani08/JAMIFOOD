@@ -601,9 +601,6 @@ export class SubscriptionsController {
     };
   }
 
-  @Require(
-    'subscriptions.read',
-  )
   @Require('subscriptions.read')
 @Get('alerts')
 async alerts() {
@@ -832,6 +829,7 @@ async alerts() {
     },
   };
 }
+  @Require('subscriptions.read')
   @Get(':id')
   async detail(
     @Param('id')
