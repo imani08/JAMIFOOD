@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200">
+<defs><linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#421324"/><stop offset="1" stop-color="#a75c4d"/></linearGradient><radialGradient id="p"><stop stop-color="#fffdf5"/><stop offset="1" stop-color="#ead5ad"/></radialGradient></defs>
+<rect width="1200" height="1200" fill="url(#b)"/><circle cx="260" cy="250" r="250" fill="#efc873" opacity=".16"/><circle cx="1020" cy="980" r="330" fill="#2a0917" opacity=".35"/>
+<g transform="translate(610 630) rotate(9)"><circle r="330" fill="url(#p)"/><circle r="255" fill="#f8f1df"/><ellipse cx="-40" cy="20" rx="135" ry="105" fill="#f1d58a"/><ellipse cx="120" cy="-85" rx="105" ry="65" fill="#bd653e"/><ellipse cx="115" cy="55" rx="110" ry="66" fill="#8c4b34"/><g fill="#2f704f"><ellipse cx="-145" cy="-80" rx="70" ry="27" transform="rotate(-25 -145 -80)"/><ellipse cx="-165" cy="55" rx="65" ry="25" transform="rotate(35 -165 55)"/></g><g fill="#d95345"><circle cx="-95" cy="-145" r="23"/><circle cx="-148" cy="-128" r="18"/></g></g>
+</svg>
