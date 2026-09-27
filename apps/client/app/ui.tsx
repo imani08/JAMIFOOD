@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { ArrowRight, ChevronDown, CircleUserRound, ClipboardList, Home, QrCode, Route, ShoppingBag, Utensils } from './icons';
+import { GuidedTour } from './guided-tour';
 
 const guestLinks = [
   { href: '/home', label: 'Accueil', icon: Home },
@@ -35,9 +36,10 @@ export function ClientShell({ children }: { children: React.ReactNode }) {
   const hiddenShell = path === '/' || path === '/auth' || path === '/login' || path === '/register' || path === '/forgot-password' || path === '/reset-password' || path === '/activate-account' || path === '/email-verification-pending' || path === '/verify-email';
   const visibleLinks = mode === 'client' ? clientLinks : guestLinks;
 
-  if (hiddenShell) return <>{children}</>;
+  if (hiddenShell) return <><GuidedTour mode={mode}/>{children}</>;
 
   return <>
+    <GuidedTour mode={mode}/>
     <header className="site-header">
       <Link className="wordmark" href="/home" aria-label="JAMI FOOD accueil">
         <span className="wordmark-icon">J</span>
@@ -47,6 +49,7 @@ export function ClientShell({ children }: { children: React.ReactNode }) {
         {visibleLinks.slice(0, 4).map(({ href, label }) => <Link key={href} href={href} className={path === href ? 'nav-link active' : 'nav-link'}>{label}</Link>)}
       </nav>
       <div className="header-actions">
+        <button type="button" className="tour-header-button" onClick={() => window.dispatchEvent(new Event('jami-tour-start'))}>Visite guidée</button>
         {mode === 'client'
           ? <Link href="/account" className="account-pill"><CircleUserRound size={19}/> Mon JAMI FOOD <ChevronDown size={14}/></Link>
           : mode === 'guest'
