@@ -248,3 +248,402 @@ body{background:var(--m-bg);color:var(--m-ink)}
   .menu-grid{grid-template-columns:1fr}.dish-image,.dish-placeholder{height:220px}
 }
 @media(max-width:350px){.modern-shortcuts{grid-template-columns:1fr}.minimal-category-grid{grid-template-columns:1fr}.modern-hero h1{font-size:40px}}
+
+
+/* =========================================================
+   FOOD MINIMAL V4 — WARM CAMPUS EXPERIENCE
+   ========================================================= */
+:root{
+  --m-bg:#f5f0e8;
+  --m-bg-2:#efe7db;
+  --m-card:#fffdf8;
+  --m-card-2:#f9f4ec;
+  --m-ink:#181716;
+  --m-muted:#756f69;
+  --m-line:#e6ddd2;
+  --m-brand:#6a1f39;
+  --m-brand-dark:#4c1428;
+  --m-gold:#d8aa58;
+  --m-green:#3f6c55;
+  --m-shadow:0 18px 50px rgba(58,34,29,.09);
+}
+html,body{background:var(--m-bg);color:var(--m-ink)}
+body{
+  background:
+    radial-gradient(circle at 7% 5%,rgba(216,170,88,.12),transparent 26rem),
+    radial-gradient(circle at 94% 18%,rgba(106,31,57,.08),transparent 30rem),
+    linear-gradient(180deg,var(--m-bg) 0%,#f8f4ed 52%,var(--m-bg-2) 100%);
+}
+body:before{
+  content:'';
+  position:fixed;
+  inset:0;
+  pointer-events:none;
+  z-index:-1;
+  opacity:.035;
+  background:
+    url('/images/category-breakfast.svg') -110px 16vh/280px auto no-repeat,
+    url('/images/category-drinks.svg') calc(100% + 110px) 58vh/290px auto no-repeat,
+    url('/images/register-food.svg') 72vw 92vh/260px auto no-repeat;
+  filter:saturate(.4);
+}
+.site-header{
+  background:rgba(255,253,248,.88);
+  border-bottom:1px solid rgba(118,87,68,.11);
+  box-shadow:0 8px 28px rgba(61,34,28,.05);
+}
+.site-footer{
+  background:#f2eadf;
+  border-top:1px solid #e2d7ca;
+}
+.developer-credit a{font-weight:800;color:var(--m-brand);text-decoration:none}
+.developer-credit a:hover{text-decoration:underline}
+
+/* first impression / startup */
+.startup-splash{background:#2e0c19}
+.startup-photo{
+  background:
+    linear-gradient(115deg,rgba(35,8,19,.18),rgba(35,8,19,.03)),
+    url('/images/hero-food.svg') center/cover no-repeat;
+}
+.startup-shade{background:linear-gradient(180deg,rgba(24,6,13,.08) 0%,rgba(42,10,24,.36) 44%,rgba(31,8,18,.86) 100%)}
+.startup-content:before{
+  content:'';
+  position:absolute;
+  width:360px;height:360px;border-radius:50%;
+  border:1px solid rgba(255,255,255,.12);
+  box-shadow:0 0 0 54px rgba(255,255,255,.035),0 0 0 108px rgba(255,255,255,.02);
+  z-index:-1;
+}
+.startup-logo{background:rgba(71,20,40,.72);border-color:rgba(255,255,255,.5);box-shadow:0 30px 90px rgba(14,4,9,.5)}
+.startup-caption{font-weight:700}
+
+/* auth screens */
+.minimal-auth,.auth-stage,.auth-layout{
+  background:
+    radial-gradient(circle at 12% 14%,rgba(216,170,88,.13),transparent 24rem),
+    linear-gradient(180deg,#f8f3eb,#f1e9de);
+}
+.minimal-auth-panel,.auth-panel{background:transparent}
+.minimal-auth-inner,.auth-panel-inner{
+  background:rgba(255,253,248,.76);
+  border:1px solid rgba(123,92,69,.11);
+  box-shadow:0 24px 70px rgba(56,32,26,.08);
+  border-radius:26px;
+}
+.minimal-auth-inner{padding:34px}
+.auth-panel-inner{padding:32px}
+.auth-panel:before{
+  background:
+    url('/images/category-breakfast.svg') 105% 8%/180px auto no-repeat,
+    radial-gradient(circle at 80% 10%,rgba(216,170,88,.12),transparent 15rem);
+  opacity:.13;
+}
+.auth-media,.minimal-auth-visual{box-shadow:inset -35px 0 70px rgba(32,7,17,.18)}
+.auth-media-login{background-image:url('/images/login-bowl.svg')}
+.auth-media-register{background-image:url('/images/register-food.svg')}
+.auth-form input,.profile-form input,.profile-form select{
+  background:#fffdf9;
+  border:1px solid #ddd1c4;
+  border-radius:13px;
+}
+.auth-form input:focus,.profile-form input:focus{
+  border-color:#b78848;
+  box-shadow:0 0 0 4px rgba(216,170,88,.13);
+}
+.choice-card{background:#fffdf9;border-color:#e4d9cc;border-radius:16px}
+.choice-card.selected{background:#f9f1e4;border-color:#b88b4c}
+.auth-guest-link{font-weight:700;color:var(--m-brand)}
+
+/* every content page */
+.page-wrap{
+  max-width:1180px;
+  margin:0 auto;
+  padding:62px 28px 104px;
+  position:relative;
+}
+.page-wrap:before{
+  content:'';
+  position:absolute;
+  width:260px;height:260px;
+  right:-115px;top:28px;
+  background:url('/images/category-breakfast.svg') center/contain no-repeat;
+  opacity:.045;
+  pointer-events:none;
+  filter:grayscale(.25);
+}
+.page-wrap:after{
+  content:'';
+  position:absolute;
+  width:220px;height:220px;
+  left:-130px;bottom:80px;
+  background:url('/images/category-drinks.svg') center/contain no-repeat;
+  opacity:.035;
+  pointer-events:none;
+}
+.page-wrap>*{position:relative;z-index:1}
+.page-intro{
+  max-width:760px;
+  padding:6px 0 8px;
+  margin-bottom:32px;
+}
+.page-intro h1{
+  font:800 clamp(34px,4.5vw,54px)/1.02 Arial,Helvetica,sans-serif;
+  letter-spacing:-2px;
+  color:var(--m-ink);
+}
+.page-intro p{color:var(--m-muted);font-size:13px;max-width:600px}
+.eyebrow{color:var(--m-brand);font-weight:900}
+
+/* menu */
+.menu-toolbar{
+  padding:11px 13px;
+  background:rgba(255,253,248,.76);
+  border:1px solid var(--m-line);
+  border-radius:18px;
+  backdrop-filter:blur(14px);
+  box-shadow:0 10px 34px rgba(58,34,29,.05);
+}
+.search-box{background:#fffdf9;border-color:#ddd2c7}
+.menu-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+.dish-card{
+  background:var(--m-card);
+  border:1px solid #e4d9ce;
+  border-radius:22px;
+  overflow:hidden;
+  box-shadow:0 12px 32px rgba(60,36,31,.06);
+}
+.dish-card:hover{transform:translateY(-5px);box-shadow:0 22px 50px rgba(60,36,31,.11)}
+.dish-image,.dish-placeholder{height:220px}
+.dish-placeholder{
+  background:
+    radial-gradient(circle at 50% 45%,rgba(216,170,88,.28),transparent 32%),
+    linear-gradient(135deg,#efe3d4,#f8f2e9);
+  color:rgba(106,31,57,.28);
+}
+.dish-copy h2{font:800 19px Arial,sans-serif;color:var(--m-ink);letter-spacing:-.5px}
+.dish-copy p{color:var(--m-muted)}
+.dish-stock{background:#edf4ef;color:#37644c}
+.dish-bottom .button{border-radius:13px;background:#171717}
+
+/* cart and generic account data */
+.cart-panel,.data-list,.profile-form,.qr-card{
+  background:rgba(255,253,248,.82);
+  border:1px solid var(--m-line);
+  border-radius:22px;
+  box-shadow:var(--m-shadow);
+}
+.cart-panel{padding:22px}
+.data-list{padding:8px}
+.data-row{
+  background:#fffdf9;
+  border:1px solid #ece2d8;
+  border-radius:16px;
+  margin:8px 0;
+  padding:16px;
+}
+.data-row:hover{border-color:#d8c6b4}
+.data-row b{color:var(--m-ink)}
+.data-row small{color:var(--m-muted)}
+.quantity-control{
+  padding:4px;
+  border-radius:12px;
+  background:#f1ebe3;
+}
+.quantity-control button{background:#fff;border:0;box-shadow:0 2px 7px rgba(0,0,0,.05)}
+.cart-estimate{
+  padding:18px;
+  border-radius:16px;
+  background:linear-gradient(135deg,#6a1f39,#4c1428);
+  color:#fff;
+}
+.cart-panel select{
+  min-height:48px;
+  border:1px solid #ddd1c4;
+  border-radius:12px;
+  background:#fffdf9;
+  padding:0 12px;
+}
+
+/* account */
+.account-welcome{
+  background:
+    linear-gradient(135deg,rgba(24,24,24,.96),rgba(53,34,29,.96)),
+    url('/images/hero-food.svg') 110% center/320px auto no-repeat;
+  border-radius:26px;
+  box-shadow:0 24px 60px rgba(38,20,19,.16);
+}
+.account-welcome:before{
+  content:'';
+  position:absolute;inset:0;
+  background:url('/images/hero-food.svg') calc(100% + 80px) center/360px auto no-repeat;
+  opacity:.11;
+  pointer-events:none;
+}
+.account-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.account-card{
+  background:rgba(255,253,248,.88);
+  border:1px solid var(--m-line);
+  border-radius:18px;
+  min-height:108px;
+  box-shadow:0 8px 24px rgba(56,32,26,.04);
+}
+.account-card:hover{transform:translateY(-3px);box-shadow:0 16px 34px rgba(56,32,26,.08)}
+.account-card-icon{background:#f0e7db;color:var(--m-brand)}
+
+/* profile */
+.profile-form{
+  max-width:760px;
+  padding:24px;
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:14px 16px;
+}
+.profile-form label{display:grid;gap:7px;font-size:11px;font-weight:800;color:#4d4844}
+.profile-form input{height:48px;padding:0 13px}
+.profile-form input:disabled{background:#f1ece5;color:#77726d}
+.profile-form .verification-status,.verification-status{
+  grid-column:1/-1;
+  padding:14px 16px;
+  background:#f4ece1;
+  border-radius:14px;
+  color:#5e5148;
+}
+.profile-form>p,.profile-form>.form-error,.profile-form>.form-note,.profile-form>button{grid-column:1/-1}
+
+/* QR */
+.qr-card{
+  max-width:520px;
+  margin:0 auto;
+  padding:34px;
+  text-align:center;
+  background:
+    radial-gradient(circle at 50% 42%,rgba(216,170,88,.11),transparent 45%),
+    #fffdf9;
+}
+.qr-card img{
+  display:block;
+  margin:0 auto 18px;
+  border-radius:20px;
+  padding:14px;
+  background:#fff;
+  box-shadow:0 10px 30px rgba(56,32,26,.08);
+}
+.qr-card b{display:block;font-size:18px;color:var(--m-brand);margin-bottom:6px}
+.qr-card small{display:block;color:var(--m-muted);line-height:1.65}
+
+/* empty states and coming-soon */
+.empty-card{
+  background:
+    linear-gradient(135deg,rgba(255,253,248,.94),rgba(247,240,231,.95));
+  border:1px solid #dfd3c6;
+  border-radius:22px;
+  box-shadow:0 14px 40px rgba(56,32,26,.05);
+}
+.empty-icon{background:#eee4d7;color:var(--m-brand)}
+
+/* welcome */
+.welcome-info{
+  background:
+    linear-gradient(180deg,rgba(255,253,248,.75),rgba(249,243,235,.75));
+  border-radius:26px;
+  padding:56px;
+  box-shadow:var(--m-shadow);
+}
+.value-grid article{background:#fffdf9;border-color:#e5d9cc;border-radius:18px}
+
+/* bottom navigation */
+.bottom-nav{
+  background:rgba(255,253,248,.93);
+  border-top:1px solid #e5d9ce;
+  backdrop-filter:blur(18px);
+}
+.bottom-link.active{color:var(--m-brand)}
+
+/* mobile */
+@media(max-width:900px){
+  .menu-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .account-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:800px){
+  body:before{opacity:.024;background-size:190px auto,210px auto,190px auto}
+  .page-wrap{padding:38px 16px 96px}
+  .page-wrap:before{width:180px;height:180px;right:-95px;top:22px;opacity:.035}
+  .page-intro{margin-bottom:24px}
+  .page-intro h1{font-size:36px;letter-spacing:-1.4px}
+  .menu-toolbar{align-items:stretch}
+  .profile-form{grid-template-columns:1fr;padding:18px}
+  .profile-form>*{grid-column:1!important}
+  .account-welcome{border-radius:20px}
+  .minimal-auth-inner,.auth-panel-inner{border-radius:20px;padding:22px}
+}
+@media(max-width:560px){
+  .menu-grid{grid-template-columns:1fr 1fr;gap:9px}
+  .dish-card{border-radius:17px}
+  .dish-image,.dish-placeholder{height:145px}
+  .dish-copy{padding:12px}
+  .dish-copy h2{font-size:15px}
+  .dish-copy p{font-size:9px;min-height:28px}
+  .dish-bottom{gap:8px}
+  .account-grid{grid-template-columns:1fr}
+  .data-row{align-items:flex-start;flex-direction:column}
+  .cart-panel{padding:14px}
+  .welcome-info{padding:30px 20px}
+}
+@media(max-width:390px){
+  .menu-grid{grid-template-columns:1fr}
+  .dish-image,.dish-placeholder{height:180px}
+}
+
+
+/* food accents added to the first screens without clutter */
+.startup-foodmark{
+  position:absolute;
+  z-index:2;
+  right:clamp(24px,6vw,90px);
+  top:clamp(26px,7vh,72px);
+  width:118px;height:118px;
+  border-radius:50%;
+  display:grid;place-content:center;justify-items:center;gap:4px;
+  border:1px solid rgba(255,255,255,.22);
+  background:rgba(69,18,38,.24);
+  backdrop-filter:blur(10px);
+  color:#fff;
+  transform:rotate(7deg);
+}
+.startup-foodmark span{font-size:8px;color:var(--m-gold)}
+.startup-foodmark i{display:block;width:34px;height:1px;background:var(--m-gold)}
+.startup-foodmark b{font:800 17px Arial,sans-serif;letter-spacing:2px}
+.startup-credit{color:#f2cf86!important}
+.auth-food-watermark{
+  position:absolute;
+  width:160px;height:160px;
+  right:-42px;bottom:-46px;
+  border-radius:50%;
+  background:url('/images/category-breakfast.svg') center/cover no-repeat;
+  opacity:.055;
+  pointer-events:none;
+  filter:saturate(.5);
+}
+.auth-food-watermark.alt{
+  background-image:url('/images/category-drinks.svg');
+  right:-34px;bottom:-54px;
+}
+.auth-layout:before{
+  content:'';
+  position:absolute;
+  width:190px;height:190px;
+  left:-68px;bottom:24px;
+  background:url('/images/login-bowl.svg') center/contain no-repeat;
+  opacity:.05;
+  pointer-events:none;
+}
+.food-page:before{opacity:.065}
+
+@media(max-width:800px){
+  .startup-foodmark{width:82px;height:82px;right:18px;top:22px}
+  .startup-foodmark b{font-size:12px}
+  .startup-foodmark i{width:24px}
+  .startup-caption .startup-credit{display:none}
+  .auth-food-watermark{width:115px;height:115px;opacity:.045}
+}

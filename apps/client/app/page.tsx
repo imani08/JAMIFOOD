@@ -25,7 +25,7 @@ export default function StartupPage() {
       <div className="startup-photo" aria-hidden="true" />
       <div className="startup-shade" aria-hidden="true" />
       <div className="startup-grain" aria-hidden="true" />
-      <div className="startup-content">
+      <div className="startup-foodmark" aria-hidden="true"><span>●</span><i/><b>JAMI</b></div><div className="startup-content">
         <div className="startup-logo">J<span>F</span></div>
         <p className="startup-brand">JAMI <b>FOOD</b></p>
         <p className="startup-tagline">LE GOÛT DU CAMPUS</p>
@@ -33,7 +33,7 @@ export default function StartupPage() {
       </div>
       <div className="startup-caption">
         <span>Université Loyola du Congo</span>
-        <span>Restaurant étudiant · Kinshasa</span>
+        <span>Restaurant étudiant · Kinshasa</span><span className="startup-credit">Développé par Imani Kalumuna</span>
       </div>
     </main>
   );
