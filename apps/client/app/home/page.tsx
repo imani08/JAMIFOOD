@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { ArrowRight, Clock3, MapPin, ShoppingBag, Sparkles, Utensils } from '../icons';
+import { ArrowRight, Clock3, MapPin, QrCode, Route, ShoppingBag, Sparkles, Utensils } from '../icons';
 
 const categories = [
   { name: 'Repas', className: 'home-cat-meals', text: 'Les plats du service publié aujourd’hui.' },
@@ -28,11 +28,19 @@ export default function RestaurantHomePage() {
           </div>
         </div>
         <div className="restaurant-hero-badge"><span>FRAIS</span><b>JAMI</b><span>FOOD</span></div>
+        <div className="restaurant-hero-corner-note"><span>01</span><p>Une expérience pensée pour votre pause sur le campus.</p></div>
+      </section>
+
+      <section className="home-action-dock" aria-label="Accès rapides">
+        <Link href="/menu" className="home-action-item"><span><Utensils size={19}/></span><div><b>Voir le menu</b><small>Les plats disponibles aujourd’hui</small></div><ArrowRight size={16}/></Link>
+        <Link href="/cart" className="home-action-item"><span><ShoppingBag size={19}/></span><div><b>Mon panier</b><small>Préparer ma commande</small></div><ArrowRight size={16}/></Link>
+        <Link href="/track-order" className="home-action-item"><span><Route size={19}/></span><div><b>Suivre</b><small>Retrouver une commande</small></div><ArrowRight size={16}/></Link>
+        <Link href="/account/qr" className="home-action-item"><span><QrCode size={19}/></span><div><b>Mon QR</b><small>Accès rapide à mon identifiant</small></div><ArrowRight size={16}/></Link>
       </section>
 
       <section className="home-section home-categories">
         <div className="home-section-heading">
-          <div><span className="eyebrow">EXPLOREZ SELON VOTRE ENVIE</span><h2>Des catégories claires, un choix simple.</h2></div>
+          <div><span className="eyebrow">EXPLOREZ SELON VOTRE ENVIE</span><h2>Choisissez votre pause en un regard.</h2><p className="home-section-subtitle">Une présentation plus visuelle pour arriver plus vite à ce que vous voulez manger.</p></div>
           <Link className="text-link" href="/menu">Tout le menu <ArrowRight size={16}/></Link>
         </div>
         <div className="home-category-grid">
@@ -62,6 +70,7 @@ export default function RestaurantHomePage() {
       <section className="home-story">
         <div className="home-story-image" aria-hidden="true" />
         <div className="home-story-copy">
+          <span className="home-story-label">JAMI FOOD EXPERIENCE</span>
           <span className="eyebrow">UN MOMENT À PART SUR LE CAMPUS</span>
           <h2>Plus qu’un repas, une vraie pause.</h2>
           <p>JAMI FOOD rassemble le menu, le service et votre parcours client dans une expérience pensée d’abord pour le téléphone.</p>
