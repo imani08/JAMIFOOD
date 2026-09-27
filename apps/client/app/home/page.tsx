@@ -2,79 +2,71 @@ import Link from 'next/link';
 import { ArrowRight, Clock3, MapPin, QrCode, Route, ShoppingBag, Sparkles, Utensils } from '../icons';
 
 const categories = [
-  { name: 'Repas', className: 'home-cat-meals', text: 'Les plats du service publié aujourd’hui.' },
-  { name: 'Petit-déjeuner', className: 'home-cat-breakfast', text: 'Commencez la journée avec une vraie pause.' },
-  { name: 'Sandwichs & snacks', className: 'home-cat-snacks', text: 'Rapide, pratique et gourmand.' },
-  { name: 'Boissons', className: 'home-cat-drinks', text: 'Pour compléter votre repas.' },
+  { name: 'Repas', className: 'minimal-cat minimal-cat-meals' },
+  { name: 'Petit-déj', className: 'minimal-cat minimal-cat-breakfast' },
+  { name: 'Snacks', className: 'minimal-cat minimal-cat-snacks' },
+  { name: 'Boissons', className: 'minimal-cat minimal-cat-drinks' },
 ];
 
 export default function RestaurantHomePage() {
   return (
-    <main className="restaurant-home">
-      <section className="restaurant-hero">
-        <div className="restaurant-hero-photo" aria-hidden="true" />
-        <div className="restaurant-hero-overlay" aria-hidden="true" />
-        <div className="restaurant-hero-copy">
-          <span className="eyebrow eyebrow-light"><Sparkles size={14}/> LE RESTAURANT DU CAMPUS</span>
-          <h1>Qu’est-ce qui vous ferait <em>plaisir aujourd’hui ?</em></h1>
-          <p>Découvrez le menu publié par JAMI FOOD, choisissez votre pause et retrouvez toute votre expérience dans un seul espace.</p>
-          <div className="restaurant-hero-actions">
-            <Link className="button button-gold" href="/menu">Voir le menu <ArrowRight size={17}/></Link>
-            <Link className="restaurant-hero-secondary" href="/account">Mon JAMI FOOD</Link>
+    <main className="modern-home">
+      <section className="modern-hero">
+        <div className="modern-hero-copy">
+          <span className="modern-kicker"><Sparkles size={14}/> JAMI FOOD · ULC</span>
+          <h1>Bien manger.<br/><em>Simplement.</em></h1>
+          <p>Le menu du campus, votre panier et vos commandes dans une expérience claire, rapide et pensée pour les étudiants.</p>
+          <div className="modern-hero-actions">
+            <Link className="modern-primary" href="/menu">Voir le menu <ArrowRight size={17}/></Link>
+            <Link className="modern-secondary" href="/account">Mon JAMI FOOD</Link>
           </div>
-          <div className="restaurant-hero-meta">
-            <span><MapPin size={16}/> Université Loyola du Congo</span>
-            <span><Clock3 size={16}/> Sur place · À emporter · Livraison selon disponibilité</span>
+          <div className="modern-meta">
+            <span><MapPin size={15}/> ULC · Kinshasa</span>
+            <span><Clock3 size={15}/> Menu selon le service publié</span>
           </div>
         </div>
-        <div className="restaurant-hero-badge"><span>FRAIS</span><b>JAMI</b><span>FOOD</span></div>
-        <div className="restaurant-hero-corner-note"><span>01</span><p>Une expérience pensée pour votre pause sur le campus.</p></div>
-      </section>
-
-      <section className="home-action-dock" aria-label="Accès rapides">
-        <Link href="/menu" className="home-action-item"><span><Utensils size={19}/></span><div><b>Voir le menu</b><small>Les plats disponibles aujourd’hui</small></div><ArrowRight size={16}/></Link>
-        <Link href="/cart" className="home-action-item"><span><ShoppingBag size={19}/></span><div><b>Mon panier</b><small>Préparer ma commande</small></div><ArrowRight size={16}/></Link>
-        <Link href="/track-order" className="home-action-item"><span><Route size={19}/></span><div><b>Suivre</b><small>Retrouver une commande</small></div><ArrowRight size={16}/></Link>
-        <Link href="/account/qr" className="home-action-item"><span><QrCode size={19}/></span><div><b>Mon QR</b><small>Accès rapide à mon identifiant</small></div><ArrowRight size={16}/></Link>
-      </section>
-
-      <section className="home-section home-categories">
-        <div className="home-section-heading">
-          <div><span className="eyebrow">EXPLOREZ SELON VOTRE ENVIE</span><h2>Choisissez votre pause en un regard.</h2><p className="home-section-subtitle">Une présentation plus visuelle pour arriver plus vite à ce que vous voulez manger.</p></div>
-          <Link className="text-link" href="/menu">Tout le menu <ArrowRight size={16}/></Link>
+        <div className="modern-hero-visual" aria-hidden="true">
+          <div className="modern-hero-image"/>
+          <div className="modern-floating-card">
+            <span className="modern-floating-icon"><Utensils size={18}/></span>
+            <div><b>Votre pause, sans détour</b><small>Choisissez. Commandez. Profitez.</small></div>
+          </div>
         </div>
-        <div className="home-category-grid">
+      </section>
+
+      <section className="modern-shortcuts" aria-label="Accès rapides">
+        <Link href="/menu"><span><Utensils size={18}/></span><div><b>Menu</b><small>Voir les plats</small></div><ArrowRight size={15}/></Link>
+        <Link href="/cart"><span><ShoppingBag size={18}/></span><div><b>Panier</b><small>Ma sélection</small></div><ArrowRight size={15}/></Link>
+        <Link href="/track-order"><span><Route size={18}/></span><div><b>Suivre</b><small>Une commande</small></div><ArrowRight size={15}/></Link>
+        <Link href="/account/qr"><span><QrCode size={18}/></span><div><b>Mon QR</b><small>Mon accès JAMI</small></div><ArrowRight size={15}/></Link>
+      </section>
+
+      <section className="modern-section">
+        <div className="modern-section-head">
+          <div><span>Explorer</span><h2>Qu’est-ce qui vous tente ?</h2></div>
+          <Link href="/menu">Tout voir <ArrowRight size={15}/></Link>
+        </div>
+        <div className="minimal-category-grid">
           {categories.map(category => (
-            <Link href="/menu" className={"home-category-card " + category.className} key={category.name}>
-              <span className="home-category-shade" />
-              <span className="home-category-content"><b>{category.name}</b><small>{category.text}</small><i>Découvrir <ArrowRight size={14}/></i></span>
+            <Link className={category.className} href="/menu" key={category.name}>
+              <span className="minimal-cat-overlay"/>
+              <b>{category.name}</b>
             </Link>
           ))}
         </div>
       </section>
 
-      <section className="home-feature-band">
-        <div className="home-feature-copy">
-          <span className="eyebrow eyebrow-light">MON JAMI FOOD</span>
-          <h2>Votre activité, sans chercher partout.</h2>
-          <p>Depuis votre compte, retrouvez vos commandes, votre abonnement s’il existe, vos droits repas, votre QR Code, vos paiements et vos reçus.</p>
-          <Link className="button button-gold" href="/account">Ouvrir mon espace <ArrowRight size={17}/></Link>
+      <section className="modern-benefit">
+        <div>
+          <span className="modern-benefit-label">MON JAMI FOOD</span>
+          <h2>Tout ce dont vous avez besoin. Rien de plus.</h2>
+          <p>Commandes, QR, droits repas, paiements et historique restent accessibles depuis votre espace personnel.</p>
+          <Link className="modern-primary light" href="/account">Ouvrir mon espace <ArrowRight size={16}/></Link>
         </div>
-        <div className="home-feature-cards">
-          <article><span><ShoppingBag size={21}/></span><b>Mes commandes</b><small>Suivez leur progression en un coup d’œil.</small></article>
-          <article><span><Utensils size={21}/></span><b>Mes droits repas</b><small>Disponible, réservé ou consommé : tout reste clair.</small></article>
-          <article><span className="home-qr-symbol">▦</span><b>Mon QR</b><small>Présentez rapidement votre identifiant JAMI FOOD.</small></article>
-        </div>
-      </section>
-
-      <section className="home-story">
-        <div className="home-story-image" aria-hidden="true" />
-        <div className="home-story-copy">
-          <span className="home-story-label">JAMI FOOD EXPERIENCE</span>
-          <span className="eyebrow">UN MOMENT À PART SUR LE CAMPUS</span>
-          <h2>Plus qu’un repas, une vraie pause.</h2>
-          <p>JAMI FOOD rassemble le menu, le service et votre parcours client dans une expérience pensée d’abord pour le téléphone.</p>
-          <div className="home-story-points"><span>01 <b>Choisissez</b></span><span>02 <b>Commandez</b></span><span>03 <b>Profitez</b></span></div>
+        <div className="modern-benefit-grid">
+          <article><ShoppingBag size={20}/><b>Commandes</b><small>Suivez vos commandes sans chercher.</small></article>
+          <article><QrCode size={20}/><b>QR JAMI</b><small>Votre identifiant accessible rapidement.</small></article>
+          <article><Utensils size={20}/><b>Droits repas</b><small>Consultez leur statut simplement.</small></article>
         </div>
       </section>
     </main>

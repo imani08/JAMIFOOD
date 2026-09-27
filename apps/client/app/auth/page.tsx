@@ -1,58 +1,48 @@
 import Link from 'next/link';
-import { ArrowRight, Sparkles, Utensils, UserRound } from '../icons';
+import { ArrowRight, Sparkles } from '../icons';
 
 export default function AuthEntryPage() {
   return (
-    <main className="auth-entry">
-      <section className="auth-entry-visual" aria-label="Ambiance JAMI FOOD">
-        <div className="auth-entry-overlay" />
-        <div className="auth-entry-brand">
-          <span className="eyebrow eyebrow-light"><Sparkles size={14}/> JAMI FOOD · ULC</span>
-          <h1>Votre pause.<br/><em>Votre goût.</em></h1>
-          <p>Des repas qui donnent envie, une expérience simple et tout votre JAMI FOOD au même endroit.</p>
-          <div className="auth-entry-proof">
-            <span><Utensils size={17}/> Menu du jour</span>
-            <span><UserRound size={17}/> Espace personnel</span>
-          </div>
-          <div className="auth-signature-card">
-            <span>JAMI FOOD</span>
-            <b>Simple. Rapide. Gourmand.</b>
-            <small>Votre restaurant étudiant, dans votre poche.</small>
-          </div>
+    <main className="minimal-auth">
+      <section className="minimal-auth-visual">
+        <div className="minimal-auth-image" aria-hidden="true"/>
+        <div className="minimal-auth-overlay"/>
+        <div className="minimal-auth-brand">
+          <span className="modern-kicker light"><Sparkles size={14}/> JAMI FOOD · ULC</span>
+          <h1>Votre pause.<br/>Votre JAMI.</h1>
+          <p>Une expérience simple, moderne et pensée pour le rythme du campus.</p>
         </div>
-        <p className="auth-photo-caption">Bien manger, vivre le campus.</p>
       </section>
 
-      <section className="auth-entry-panel">
-        <div className="auth-entry-panel-inner">
-          <Link className="auth-mini-brand" href="/auth" aria-label="JAMI FOOD">
-            <span className="wordmark-icon">J</span>
-            <span>JAMI <b>FOOD</b></span>
+      <section className="minimal-auth-panel">
+        <div className="minimal-auth-inner">
+          <Link className="minimal-logo" href="/auth">
+            <span>J</span><b>JAMI FOOD</b>
           </Link>
-          <span className="eyebrow">BIENVENUE CHEZ JAMI FOOD</span>
-          <h2>Comment souhaitez-vous entrer ?</h2>
-          <p className="auth-entry-lead">Connectez-vous à votre espace, créez votre compte ULC ou découvrez le restaurant en visiteur.</p>
 
-          <div className="auth-choice-stack">
-            <Link className="auth-choice primary" href="/login">
-              <span className="auth-choice-number">01</span>
-              <span><b>Se connecter</b><small>Retrouver mes commandes, droits et activités.</small></span>
+          <div className="minimal-auth-heading">
+            <span>Bienvenue</span>
+            <h2>On commence comment ?</h2>
+            <p>Accédez à votre compte ULC ou découvrez simplement le menu.</p>
+          </div>
+
+          <div className="minimal-auth-actions">
+            <Link className="minimal-auth-action primary" href="/login">
+              <div><b>Se connecter</b><small>Mon espace, mes commandes et mon QR</small></div>
               <ArrowRight size={18}/>
             </Link>
-            <Link className="auth-choice" href="/register">
-              <span className="auth-choice-number">02</span>
-              <span><b>Créer mon compte</b><small>Pour les étudiants et le personnel de l’ULC.</small></span>
+            <Link className="minimal-auth-action" href="/register">
+              <div><b>Créer mon compte</b><small>Étudiant ou personnel ULC</small></div>
               <ArrowRight size={18}/>
             </Link>
-            <Link className="auth-choice guest" href="/home">
-              <span className="auth-choice-number">03</span>
-              <span><b>Continuer comme visiteur</b><small>Découvrir le menu et l’univers JAMI FOOD.</small></span>
+            <Link className="minimal-auth-action ghost" href="/home">
+              <div><b>Continuer comme visiteur</b><small>Voir le menu sans créer de compte</small></div>
               <ArrowRight size={18}/>
             </Link>
           </div>
 
-          <div className="auth-mini-features"><span>Menu</span><i/> <span>Commandes</span><i/> <span>QR</span><i/> <span>Historique</span></div>
-          <p className="auth-entry-note">Les visiteurs externes peuvent parcourir le restaurant sans créer de compte. L’inscription est réservée à la communauté ULC.</p>
+          <p className="minimal-auth-note">L’inscription est réservée aux étudiants et au personnel ULC.</p>
+          <p className="developer-credit auth-credit">Développé par <a href="https://linkedin.com/in/imani-kalumuna" target="_blank" rel="noreferrer">Imani Kalumuna</a> · UX/UI Engineer</p>
         </div>
       </section>
     </main>
