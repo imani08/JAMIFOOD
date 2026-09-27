@@ -42,7 +42,7 @@ export default function AuthEntryPage() {
           </div>
 
           <p className="minimal-auth-note">L’inscription est réservée aux étudiants et au personnel ULC.</p>
-          <p className="developer-credit auth-credit">Développé par <a href="https://linkedin.com/in/imani-kalumuna" target="_blank" rel="noreferrer">Imani Kalumuna</a> · UX/UI Engineer</p>
+          <p className="developer-credit auth-credit">Développé par <a href="https://www.linkedin.com/in/imani-k-844107274/" target="_blank" rel="noreferrer">Imani Kalumuna</a></p>
         </div>
       </section>
     </main>
