@@ -66,7 +66,7 @@ export function ClientShell({ children }: { children: React.ReactNode }) {
     <footer className="site-footer">
       <Link className="wordmark footer-mark" href="/home"><span className="wordmark-icon">J</span><span>JAMI <b>FOOD</b><small>UNIVERSITÉ LOYOLA DU CONGO</small></span></Link>
       <span>Bien manger, vivre le campus.</span>
-      <span>© {new Date().getFullYear()} JAMI FOOD</span>
+      <span className="developer-credit">Développé par <a href="https://linkedin.com/in/imani-kalumuna" target="_blank" rel="noreferrer">Imani Kalumuna</a> · UX/UI Engineer</span>
     </footer>
   </>;
 }
