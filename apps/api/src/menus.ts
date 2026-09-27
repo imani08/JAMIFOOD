@@ -192,7 +192,7 @@ export class MenusController {
       const product = item.productSnapshot as { name?: string; imageUrl?: string; description?: string } | null;
       return [{ id: item.productId, name: product?.name ?? item.product.name, imageUrl: product?.imageUrl ?? item.product.imageUrl, description: product?.description ?? item.product.description, variants: item.variants, remaining, price: { amount: price.amount, currency: price.currency } }];
     });
-    return { success: true, data: { businessDate, serviceCode, version: version.version, items } };
+    return { success: true, data: { businessDate, serviceCode, version: version.version, menuVersionId: version.id, items } };
   }
 
   @Require('menus.read')

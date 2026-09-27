@@ -25,11 +25,25 @@ de la session HttpOnly; elles ne devront jamais prendre un `clientId` navigateur
 comme identité. Les informations publiques relèvent de `/api/v1/public/*`.
 Les routes internes personnel ne sont pas des contrats client.
 
-À ce stade, l’API du dépôt ne possède pas encore de session client ni de routes
-`public`/`client`. Les écrans correspondants affichent donc des états vides ou
-expliquent que les données personnelles nécessitent une connexion, sans afficher
-de produits, prix, soldes ou commandes fictifs. Le panier navigateur ne valide
-jamais un prix ni une commande.
+L’API du portail est fournie par `apps/api/src/client-portal.ts`: inscription ULC
+avec session client distincte, connexion, déconnexion, profil, données privées,
+commandes et QR. Le menu public lit uniquement la version publiée du menu et son
+instantané tarifaire. Le tarif affiché au visiteur provient exclusivement de la
+catégorie configurée dans `PUBLIC_PRICE_CATEGORY_CODE`; s’il n’est pas renseigné,
+le menu reste indisponible au lieu d’inventer un prix.
+
+L’installation requiert les migrations Prisma. `QR_TOKEN_ENCRYPTION_KEY` doit
+être une clé hexadécimale aléatoire de 32 octets, conservée dans le gestionnaire
+de secrets, et `COOKIE_SECURE=true` en production. Le back-office propose la
+validation des inscriptions dans « Vérification ULC »; une demande reste
+`PENDING` jusque-là. Les commandes sont créées avec les prix figés dans le menu
+publié et doivent ensuite être payées/confirmées à la caisse. Aucun flux de
+paiement en ligne n’est activé.
+
+La commande visiteur sans compte, la récupération de mot de passe et les reçus
+PDF exigent encore des contrats et contrôles complémentaires (token de suivi
+invité, envoi e-mail vérifié, numérotation/format fiscal). Le dépôt ne comporte
+pas ces mécanismes; leurs écrans ne les présentent donc pas comme actifs.
 
 ## Design
 

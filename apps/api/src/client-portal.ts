@@ -112,6 +112,56 @@ export class ClientPortalService {
     if (!order) throw new DomainError('ORDER_NOT_FOUND', 'Commande introuvable.', 404);
     return { success: true, data: order };
   }
+
+  async createOrder(req: Request, input: unknown) {
+    const s = await this.authenticate(req);
+    const body = z.object({ menuVersionId: z.string().uuid(), serviceMode: z.enum(['DINE_IN','TAKEAWAY']), currency: z.enum(['CDF','USD']), items: z.array(z.object({ productId: z.string().uuid(), quantity: z.number().int().min(1).max(100) }).strict()).min(1).max(50) }).strict().parse(input);
+    const publicPriceCategory = process.env.PUBLIC_PRICE_CATEGORY_CODE;
+    if (s.account.verificationStatus !== 'VERIFIED' && !publicPriceCategory) throw new DomainError('ACCOUNT_PENDING_VERIFICATION', 'Votre compte doit être vérifié avant de passer une commande.', 403);
+    const menuVersion = await this.db.menuVersion.findFirst({ where: { id: body.menuVersionId, status: 'PUBLISHED', menu: { businessDate: new Date(new Intl.DateTimeFormat('en-CA', { timeZone: process.env.RESTAURANT_TIMEZONE ?? 'Africa/Kinshasa' }).format(new Date()) + 'T00:00:00.000Z') } }, include: { items: { where: { available: true, product: { active: true, available: true } } }, menu: true } });
+    if (!menuVersion) throw new DomainError('MENU_UNAVAILABLE', 'Ce menu n’est plus publié pour aujourd’hui.', 409);
+    const result = await this.db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM "MenuVersion" WHERE id = ${menuVersion.id}::uuid FOR UPDATE`;
+      const latest = await tx.menuVersion.findUniqueOrThrow({ where: { id: menuVersion.id }, include: { items: true, menu: true } });
+      const products = await tx.product.findMany({ where: { id: { in: body.items.map(row => row.productId) }, active: true, available: true } });
+      const categoryCodes = s.account.verificationStatus === 'VERIFIED' ? [s.account.client.category.code] : [publicPriceCategory!];
+      const lines = body.items.map(row => {
+        const product = products.find(value => value.id === row.productId); const item = latest.items.find(value => value.productId === row.productId);
+        if (!product || !item || !item.available || row.quantity > item.quantityAvailable - item.quantitySold) throw new DomainError('MENU_ITEM_UNAVAILABLE', 'Un article est indisponible ou épuisé.', 409);
+        const snapshot = item.priceSnapshot as { categories?: Record<string,{amount:string;currency:string;priceVersionId:string}> }|null;
+        const selected=categoryCodes.map(code=>({code,price:snapshot?.categories?.[code]})).find(row=>row.price?.currency===body.currency);
+        if (!selected?.price) throw new DomainError('PRICE_UNAVAILABLE', 'Le tarif demandé n’est pas disponible.', 409);
+        return { id:item.id,product,menuItem:item,quantity:row.quantity,price:selected.price,productSnapshot:{name:product.name,menuVersionId:latest.id,clientCategoryCode:selected.code,priceVersionId:selected.price.priceVersionId} };
+      });
+      const total = lines.reduce((sum,row)=>sum+Number(row.price.amount)*row.quantity,0);
+      if (!Number.isFinite(total)||total<=0) throw new DomainError('INVALID_AMOUNT','Le montant de la commande est invalide.',400);
+      for (const row of lines) { const updated=await tx.menuItem.updateMany({where:{id:row.menuItem.id,available:true,quantitySold:{lte:row.menuItem.quantityAvailable-row.quantity}},data:{quantitySold:{increment:row.quantity}}}); if(updated.count!==1)throw new DomainError('MENU_ITEM_UNAVAILABLE','La quantité disponible vient de changer.',409); }
+      const order = await tx.order.create({ data:{number:`WEB-${new Date().getFullYear()}-${randomBytes(5).toString('hex').toUpperCase()}`,clientId:s.account.clientId,menuVersionId:latest.id,serviceMode:body.serviceMode,businessDate:latest.menu.businessDate,totalAmount:total,currency:body.currency,items:{create:lines.map(row=>({productId:row.product.id,quantity:row.quantity,unitPrice:row.price.amount,lineTotal:String(Number(row.price.amount)*row.quantity),productSnapshot:row.productSnapshot}))},statusHistory:{create:{toStatus:'RECEIVED'}}},select:{id:true,number:true,status:true,totalAmount:true,currency:true,createdAt:true} });
+      await tx.clientPortalEvent.create({data:{accountId:s.accountId,action:'ORDER_CREATED',metadata:{orderId:order.id}}}); return order;
+    });
+    return { success: true, data: result };
+  }
+
+  async qr(req: Request) {
+    const s=await this.authenticate(req);
+    if(s.account.verificationStatus!=='VERIFIED')throw new DomainError('ACCOUNT_PENDING_VERIFICATION','Votre identité ULC doit être vérifiée avant l’émission du QR.',403);
+    const active=await this.db.qRCode.findFirst({where:{clientId:s.account.clientId,status:'ACTIVE'},orderBy:{issuedAt:'desc'}});
+    if(active?.tokenCiphertext)return {success:true,data:{id:active.id,status:active.status,issuedAt:active.issuedAt,token:this.decryptQrToken(active.tokenCiphertext)}};
+    const {randomBytes,createHash,createCipheriv}=await import('node:crypto');
+    const token='JAMI-'+randomBytes(32).toString('base64url'); const keyHex=process.env.QR_TOKEN_ENCRYPTION_KEY;
+    if(!keyHex||!/^[0-9a-f]{64}$/i.test(keyHex))throw new DomainError('QR_ENCRYPTION_UNAVAILABLE','La clé de chiffrement QR n’est pas configurée.',503);
+    const iv=randomBytes(12);const cipher=createCipheriv('aes-256-gcm',Buffer.from(keyHex,'hex'),iv);const encrypted=Buffer.concat([cipher.update(token,'utf8'),cipher.final()]);const tokenCiphertext=`v1.${iv.toString('base64url')}.${cipher.getAuthTag().toString('base64url')}.${encrypted.toString('base64url')}`;
+    const created=await this.db.$transaction(async tx=>{await tx.$queryRaw`SELECT id FROM "Client" WHERE id = ${s.account.clientId}::uuid FOR UPDATE`;const existing=await tx.qRCode.findFirst({where:{clientId:s.account.clientId,status:'ACTIVE'}});if(existing)return existing;return tx.qRCode.create({data:{clientId:s.account.clientId,tokenHash:createHash('sha256').update(token).digest('hex'),tokenCiphertext,history:{create:{action:'ISSUED',metadata:{source:'CLIENT_PORTAL'}}}}});});
+    if(!created.tokenCiphertext)throw new DomainError('QR_ISSUE_CONFLICT','Réessayez de charger votre QR Code.',409);
+    return {success:true,data:{id:created.id,status:created.status,issuedAt:created.issuedAt,token}};
+  }
+
+  private decryptQrToken(value:string) {
+    const keyHex=process.env.QR_TOKEN_ENCRYPTION_KEY;
+    if(!keyHex||!/^[0-9a-f]{64}$/i.test(keyHex))throw new DomainError('QR_ENCRYPTION_UNAVAILABLE','La clé de chiffrement QR n’est pas configurée.',503);
+    const [,iv,tag,data]=value.split('.');if(!iv||!tag||!data)throw new DomainError('QR_TOKEN_INVALID','Le QR Code est invalide.',409);
+    const {createDecipheriv}=require('node:crypto') as typeof import('node:crypto');const decipher=createDecipheriv('aes-256-gcm',Buffer.from(keyHex,'hex'),Buffer.from(iv,'base64url'));decipher.setAuthTag(Buffer.from(tag,'base64url'));return Buffer.concat([decipher.update(Buffer.from(data,'base64url')),decipher.final()]).toString('utf8');
+  }
 }
 
 @Controller('client')
@@ -122,8 +172,16 @@ export class ClientPortalController {
   @Public() @Post('logout') logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) { return this.portal.logout(req, res); }
   @Public() @Get('me') me(@Req() req: Request) { return this.portal.me(req); }
   @Public() @Patch('profile') profile(@Req() req: Request, @Body() input: unknown) { return this.portal.profile(req, input); }
-  @Public() @Get(':section') section(@Req() req: Request, @Param('section') section: string) { return this.portal.accountData(req, section); }
   @Public() @Get('orders/:id') order(@Req() req: Request, @Param('id') id: string) { return this.portal.order(req, id); }
+  @Public() @Post('orders') createOrder(@Req() req: Request, @Body() input: unknown) { return this.portal.createOrder(req, input); }
+  @Public() @Get('qr') qr(@Req() req: Request) { return this.portal.qr(req); }
+  @Public() @Get('subscriptions') subscriptions(@Req() req: Request) { return this.portal.accountData(req, 'subscriptions'); }
+  @Public() @Get('rights') rights(@Req() req: Request) { return this.portal.accountData(req, 'rights'); }
+  @Public() @Get('orders') orders(@Req() req: Request) { return this.portal.accountData(req, 'orders'); }
+  @Public() @Get('payments') payments(@Req() req: Request) { return this.portal.accountData(req, 'payments'); }
+  @Public() @Get('receipts') receipts(@Req() req: Request) { return this.portal.accountData(req, 'receipts'); }
+  @Public() @Get('deliveries') deliveries(@Req() req: Request) { return this.portal.accountData(req, 'deliveries'); }
+  @Public() @Get('activity') activity(@Req() req: Request) { return this.portal.accountData(req, 'activity'); }
 
   @Require('clients.verify') @Get('verification/pending') async pending() {
     return { success: true, data: await this.db.clientAccount.findMany({ where: { verificationStatus: 'PENDING' }, orderBy: { createdAt: 'asc' }, take: 100, select: { id: true, type: true, createdAt: true, email: true, client: { select: { id: true, firstName: true, lastName: true, ulcNumber: true, faculty: true, promotion: true, residency: true, phone: true, category: { select: { label: true } } } } } }) };

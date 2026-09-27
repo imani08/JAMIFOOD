@@ -17,11 +17,17 @@
   le serveur devra recalculer tout prix de commande.
 - Aucun compte visiteur externe n’est créé.
 
-## DÉCISIONS À PRENDRE
+## CONFIGURATION OPÉRATIONNELLE RESTANTE
 
-- Aucun détail restant n’est nécessaire au parcours d’interface initial. Avant
-  activation opérationnelle, définir les contrats et procédures techniques
-  d’enrôlement/vérification, d’authentification et de récupération de compte,
-  de publication d’un tarif visiteur, de suivi sécurisé d’une commande invitée,
-  de paiement client et de commande/livraison. Tant qu’ils ne sont pas déployés,
-  l’interface n’annonce pas ces opérations comme disponibles.
+- Déployer les migrations Prisma avant de lancer l’API.
+- Configurer `PUBLIC_PRICE_CATEGORY_CODE` avec le code de catégorie commerciale
+  réellement approuvé pour les visiteurs; sans valeur, le menu ne publie aucun
+  tarif.
+- Générer `QR_TOKEN_ENCRYPTION_KEY` comme 32 octets hexadécimaux aléatoires et
+  la conserver dans le gestionnaire de secrets. Sans clé, les QR ne sont pas
+  émis.
+- Configurer `COOKIE_SECURE=true` et les origines HTTPS de production.
+- Les commandes créées depuis un compte sont encaissées à la caisse. Le suivi
+  d’une commande invitée, la récupération e-mail de mot de passe, le paiement en
+  ligne et le reçu fiscal PDF demeurent hors périmètre activé jusqu’à
+  l’implémentation de leurs mécanismes dédiés.

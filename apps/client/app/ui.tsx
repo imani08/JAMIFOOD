@@ -11,7 +11,7 @@ export function ClientShell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
   const [guest, setGuest] = useState(true);
   const [open, setOpen] = useState(false);
-  useEffect(() => { setGuest(!document.cookie.split('; ').some((part) => part.startsWith('jami_client_session='))); }, [path]);
+  useEffect(() => { let active=true; fetch('/api/v1/client/me',{credentials:'include'}).then(response=>{if(active)setGuest(!response.ok);}).catch(()=>{if(active)setGuest(true);}); return()=>{active=false;}; }, [path]);
   const visibleLinks = guest ? [...links.slice(0, 3), { href: '/track-order', label: 'Suivre', icon: Route }, { href: '/login', label: 'Connexion', icon: CircleUserRound }] : links;
   return <>
     {path !== '/welcome' && <header className="site-header"><Link className="wordmark" href="/" aria-label="JAMI FOOD accueil"><span className="wordmark-icon">J</span><span>JAMI <b>FOOD</b><small>LE GOÛT DU CAMPUS</small></span></Link>

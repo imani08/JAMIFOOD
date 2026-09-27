@@ -18,6 +18,8 @@ import {
 
 import {
   createHash,
+  createCipheriv,
+  createDecipheriv,
   randomBytes,
 } from 'node:crypto';
 
@@ -767,6 +769,7 @@ export class ClientsService {
 
               tokenHash:
                 tokenHash(token),
+              tokenCiphertext: encryptQrToken(token),
 
               history: {
                 create: {
@@ -883,6 +886,7 @@ export class ClientsService {
 
               tokenHash:
                 tokenHash(token),
+              tokenCiphertext: encryptQrToken(token),
 
               history: {
                 create: {
@@ -1717,4 +1721,22 @@ export class ClientsController {
         }),
       );
   }
+}
+
+function encryptQrToken(token: string) {
+  const keyHex = process.env.QR_TOKEN_ENCRYPTION_KEY;
+  if (!keyHex || !/^[0-9a-f]{64}$/i.test(keyHex)) throw new DomainError('QR_ENCRYPTION_UNAVAILABLE', 'La clé de chiffrement QR n’est pas configurée.', 503);
+  const iv = randomBytes(12); const cipher = createCipheriv('aes-256-gcm', Buffer.from(keyHex, 'hex'), iv);
+  const encrypted = Buffer.concat([cipher.update(token, 'utf8'), cipher.final()]);
+  return `v1.${iv.toString('base64url')}.${cipher.getAuthTag().toString('base64url')}.${encrypted.toString('base64url')}`;
+}
+
+function decryptQrToken(value: string) {
+  const keyHex = process.env.QR_TOKEN_ENCRYPTION_KEY;
+  if (!keyHex || !/^[0-9a-f]{64}$/i.test(keyHex)) throw new DomainError('QR_ENCRYPTION_UNAVAILABLE', 'La clé de chiffrement QR n’est pas configurée.', 503);
+  const [, iv, tag, data] = value.split('.');
+  if (!iv || !tag || !data) throw new DomainError('QR_TOKEN_INVALID', 'Le QR Code est invalide.', 409);
+  const decipher = createDecipheriv('aes-256-gcm', Buffer.from(keyHex, 'hex'), Buffer.from(iv, 'base64url'));
+  decipher.setAuthTag(Buffer.from(tag, 'base64url'));
+  return Buffer.concat([decipher.update(Buffer.from(data, 'base64url')), decipher.final()]).toString('utf8');
 }

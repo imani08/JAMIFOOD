@@ -1,17 +1,11 @@
+'use client';
+
 import Link from 'next/link';
-import { ArrowRight, BookOpenCheck, CreditCard, History, PackageCheck, QrCode, ReceiptText, UserRound } from '../icons';
+import { useEffect,useState } from 'react';
+import { ArrowRight,BookOpenCheck,CreditCard,History,PackageCheck,QrCode,ReceiptText,UserRound } from '../icons';
+import { clientApi } from '../lib/api';
 import { PageIntro } from '../ui';
 
-const areas = [
-  { href: '/account/subscription', title: 'Mon abonnement', text: 'Formule, période et renouvellement', icon: BookOpenCheck },
-  { href: '/account/rights', title: 'Mes droits', text: 'Vos droits repas et leur statut', icon: PackageCheck },
-  { href: '/account/qr', title: 'Mon QR Code', text: 'Votre identifiant JAMI FOOD', icon: QrCode },
-  { href: '/orders', title: 'Mes commandes', text: 'Suivre vos commandes', icon: PackageCheck },
-  { href: '/account/payments', title: 'Mes paiements', text: 'Paiements liés à votre activité', icon: CreditCard },
-  { href: '/account/receipts', title: 'Mes reçus', text: 'Retrouver vos justificatifs', icon: ReceiptText },
-  { href: '/account/deliveries', title: 'Mes livraisons', text: 'Suivi de vos livraisons', icon: PackageCheck },
-  { href: '/account/activity', title: 'Mon historique', text: 'Les moments de votre parcours', icon: History },
-  { href: '/account/profile', title: 'Mon profil', text: 'Vos informations personnelles', icon: UserRound },
-];
-
-export default function AccountPage() { return <main className="page-wrap account-home"><PageIntro eyebrow="VOTRE ESPACE PERSONNEL" title="Mon JAMI FOOD" description="Tout votre parcours JAMI FOOD, rassemblé au même endroit."/><section className="account-welcome"><span className="account-orb">J</span><div><span className="eyebrow eyebrow-light">BIENVENUE DANS VOTRE ESPACE</span><h2>Bonjour et bienvenue 👋</h2><p>Connectez-vous pour afficher les informations de votre compte.</p></div><Link href="/login" className="button button-gold">Se connecter <ArrowRight size={16}/></Link></section><section className="account-grid" aria-label="Rubriques Mon JAMI FOOD">{areas.map(({href,title,text,icon:Icon})=><Link href={href} className="account-card" key={href}><span className="account-card-icon"><Icon size={20}/></span><span><b>{title}</b><small>{text}</small></span><ArrowRight className="account-card-arrow" size={17}/></Link>)}</section></main>; }
+type Profile={firstName:string;verificationStatus:string};
+const areas=[{href:'/account/subscription',title:'Mon abonnement',text:'Formule, période et renouvellement',icon:BookOpenCheck},{href:'/account/rights',title:'Mes droits',text:'Vos droits repas et leur statut',icon:PackageCheck},{href:'/account/qr',title:'Mon QR Code',text:'Votre identifiant JAMI FOOD',icon:QrCode},{href:'/orders',title:'Mes commandes',text:'Suivre vos commandes',icon:PackageCheck},{href:'/account/payments',title:'Mes paiements',text:'Paiements liés à votre activité',icon:CreditCard},{href:'/account/receipts',title:'Mes reçus',text:'Retrouver vos justificatifs',icon:ReceiptText},{href:'/account/deliveries',title:'Mes livraisons',text:'Suivi de vos livraisons',icon:PackageCheck},{href:'/account/activity',title:'Mon historique',text:'Les moments de votre parcours',icon:History},{href:'/account/profile',title:'Mon profil',text:'Vos informations personnelles',icon:UserRound}];
+export default function AccountPage(){const [profile,setProfile]=useState<Profile|null>(null);const [error,setError]=useState('');const [busy,setBusy]=useState(true);useEffect(()=>{clientApi<Profile>('client/me').then(setProfile).catch(e=>setError(e.message)).finally(()=>setBusy(false));},[]);async function logout(){await clientApi('client/logout',{method:'POST'});setProfile(null);window.location.assign('/login');}return <main className="page-wrap account-home"><PageIntro eyebrow="VOTRE ESPACE PERSONNEL" title="Mon JAMI FOOD" description="Tout votre parcours JAMI FOOD, rassemblé au même endroit."/><section className="account-welcome"><span className="account-orb">J</span><div><span className="eyebrow eyebrow-light">BIENVENUE DANS VOTRE ESPACE</span><h2>{profile?`Bonjour ${profile.firstName} 👋`:'Votre compte JAMI FOOD'}</h2><p>{busy?'Chargement de votre compte…':error?error:profile?.verificationStatus==='PENDING'?'Votre compte attend la vérification ULC.':profile?.verificationStatus==='REJECTED'?'Votre demande a été rejetée. Contactez le service client.':'Retrouvez ici vos informations personnelles et votre parcours.'}</p></div>{profile?<button type="button" className="button button-gold" onClick={logout}>Se déconnecter</button>:<Link href="/login" className="button button-gold">Se connecter <ArrowRight size={16}/></Link>}</section>{profile&&<section className="account-grid" aria-label="Rubriques Mon JAMI FOOD">{areas.map(({href,title,text,icon:Icon})=><Link href={href} className="account-card" key={href}><span className="account-card-icon"><Icon size={20}/></span><span><b>{title}</b><small>{text}</small></span><ArrowRight className="account-card-arrow" size={17}/></Link>)}</section>}</main>;}

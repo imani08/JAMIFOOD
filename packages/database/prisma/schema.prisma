@@ -291,6 +291,7 @@ model QRCode {
   issuedAt     DateTime        @default(now())
   revokedAt    DateTime?
   replacedById String?         @unique @db.Uuid
+  tokenCiphertext String?
   client       Client          @relation(fields: [clientId], references: [id], onDelete: Restrict)
   history      QRCodeHistory[]
 

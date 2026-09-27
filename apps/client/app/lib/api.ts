@@ -1,6 +1,6 @@
 export type ApiEnvelope<T> = { success: true; data: T } | { success: false; error?: { message?: string } };
 
-export async function clientApi<T>(path: string, options: { method?: 'GET' | 'POST' | 'PATCH'; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
+export async function clientApi<T>(path: string, options: { method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE'; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 12_000);
   options.signal?.addEventListener('abort', () => controller.abort(), { once: true });
