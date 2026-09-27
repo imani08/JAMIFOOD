@@ -594,3 +594,56 @@ body:before{
   .menu-grid{grid-template-columns:1fr}
   .dish-image,.dish-placeholder{height:180px}
 }
+
+
+/* food accents added to the first screens without clutter */
+.startup-foodmark{
+  position:absolute;
+  z-index:2;
+  right:clamp(24px,6vw,90px);
+  top:clamp(26px,7vh,72px);
+  width:118px;height:118px;
+  border-radius:50%;
+  display:grid;place-content:center;justify-items:center;gap:4px;
+  border:1px solid rgba(255,255,255,.22);
+  background:rgba(69,18,38,.24);
+  backdrop-filter:blur(10px);
+  color:#fff;
+  transform:rotate(7deg);
+}
+.startup-foodmark span{font-size:8px;color:var(--m-gold)}
+.startup-foodmark i{display:block;width:34px;height:1px;background:var(--m-gold)}
+.startup-foodmark b{font:800 17px Arial,sans-serif;letter-spacing:2px}
+.startup-credit{color:#f2cf86!important}
+.auth-food-watermark{
+  position:absolute;
+  width:160px;height:160px;
+  right:-42px;bottom:-46px;
+  border-radius:50%;
+  background:url('/images/category-breakfast.svg') center/cover no-repeat;
+  opacity:.055;
+  pointer-events:none;
+  filter:saturate(.5);
+}
+.auth-food-watermark.alt{
+  background-image:url('/images/category-drinks.svg');
+  right:-34px;bottom:-54px;
+}
+.auth-layout:before{
+  content:'';
+  position:absolute;
+  width:190px;height:190px;
+  left:-68px;bottom:24px;
+  background:url('/images/login-bowl.svg') center/contain no-repeat;
+  opacity:.05;
+  pointer-events:none;
+}
+.food-page:before{opacity:.065}
+
+@media(max-width:800px){
+  .startup-foodmark{width:82px;height:82px;right:18px;top:22px}
+  .startup-foodmark b{font-size:12px}
+  .startup-foodmark i{width:24px}
+  .startup-caption .startup-credit{display:none}
+  .auth-food-watermark{width:115px;height:115px;opacity:.045}
+}
