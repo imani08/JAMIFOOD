@@ -44,7 +44,7 @@ export default function LoginPage() {
           <span className="auth-symbol"><LockKeyhole/></span>
           <span className="eyebrow">VOTRE ESPACE PERSONNEL</span>
           <h2>Ravi de vous retrouver.</h2>
-          <p className="auth-panel-lead">Connectez-vous pour continuer votre expérience JAMI FOOD.</p>
+          <p className="auth-panel-lead">Connectez-vous pour continuer votre expérience JAMI FOOD.</p><div className="auth-food-watermark" aria-hidden="true"/>
           <form className="auth-form" onSubmit={submit}>
             <label>Adresse e-mail<input name="email" autoComplete="username" type="email" placeholder="vous@exemple.com" required maxLength={254}/></label>
             <label>Mot de passe<input name="password" autoComplete="current-password" type="password" placeholder="Votre mot de passe" required maxLength={256}/></label>
