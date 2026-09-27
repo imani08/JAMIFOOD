@@ -49,7 +49,7 @@ export default function RegisterPage() {
           <Link className="auth-mini-brand" href="/auth"><span className="wordmark-icon">J</span><span>JAMI <b>FOOD</b></span></Link>
           <span className="eyebrow">CRÉER MON COMPTE</span>
           <h2>Commençons par vous.</h2>
-          <p className="auth-panel-lead">Choisissez votre profil ULC, puis complétez les informations nécessaires.</p>
+          <p className="auth-panel-lead">Choisissez votre profil ULC, puis complétez les informations nécessaires.</p><div className="auth-food-watermark alt" aria-hidden="true"/>
 
           <div className="choice-grid">
             <button type="button" className={kind==='STUDENT_HOME'||kind==='STUDENT_EXTERNAL'?'choice-card selected':'choice-card'} onClick={()=>setKind(kind?.startsWith('STUDENT')?kind:'STUDENT_HOME')}><GraduationCap/><span><b>Étudiant ULC</b><small>Résident au Home ou étudiant externe ULC</small></span></button>
