@@ -14,6 +14,11 @@ export default function AuthEntryPage() {
             <span><Utensils size={17}/> Menu du jour</span>
             <span><UserRound size={17}/> Espace personnel</span>
           </div>
+          <div className="auth-signature-card">
+            <span>JAMI FOOD</span>
+            <b>Simple. Rapide. Gourmand.</b>
+            <small>Votre restaurant étudiant, dans votre poche.</small>
+          </div>
         </div>
         <p className="auth-photo-caption">Bien manger, vivre le campus.</p>
       </section>
@@ -46,6 +51,7 @@ export default function AuthEntryPage() {
             </Link>
           </div>
 
+          <div className="auth-mini-features"><span>Menu</span><i/> <span>Commandes</span><i/> <span>QR</span><i/> <span>Historique</span></div>
           <p className="auth-entry-note">Les visiteurs externes peuvent parcourir le restaurant sans créer de compte. L’inscription est réservée à la communauté ULC.</p>
         </div>
       </section>
