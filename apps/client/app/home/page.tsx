@@ -1,11 +1,12 @@
 import Link from 'next/link';
+import Image from 'next/image';
 import { ArrowRight, Clock3, MapPin, QrCode, Route, ShoppingBag, Sparkles, Utensils } from '../icons';
 
 const categories = [
-  { name: 'Repas', className: 'minimal-cat minimal-cat-meals' },
-  { name: 'Petit-déj', className: 'minimal-cat minimal-cat-breakfast' },
-  { name: 'Snacks', className: 'minimal-cat minimal-cat-snacks' },
-  { name: 'Boissons', className: 'minimal-cat minimal-cat-drinks' },
+  { name: 'Repas', className: 'minimal-cat minimal-cat-meals', image:'/images/login-bowl.svg' },
+  { name: 'Petit-déjeuner', className: 'minimal-cat minimal-cat-breakfast', image:'/images/category-breakfast.svg' },
+  { name: 'Snacks', className: 'minimal-cat minimal-cat-snacks', image:'/images/register-food.svg' },
+  { name: 'Boissons', className: 'minimal-cat minimal-cat-drinks', image:'/images/category-drinks.svg' },
 ];
 
 export default function RestaurantHomePage() {
@@ -43,17 +44,22 @@ export default function RestaurantHomePage() {
 
       <section className="modern-section">
         <div className="modern-section-head">
-          <div><span>Explorer</span><h2>Qu’est-ce qui vous tente ?</h2></div>
+          <div><span>Explorer</span><h2>Nos catégories</h2></div>
           <Link href="/menu">Tout voir <ArrowRight size={15}/></Link>
         </div>
         <div className="minimal-category-grid">
           {categories.map(category => (
-            <Link className={category.className} href="/menu" key={category.name}>
+            <Link className={category.className} href={`/menu?category=${encodeURIComponent(category.name)}`} key={category.name} style={{backgroundImage:`linear-gradient(180deg,transparent 35%,rgba(10,10,10,.76)),url('${category.image}')`}}>
               <span className="minimal-cat-overlay"/>
               <b>{category.name}</b>
             </Link>
           ))}
         </div>
+      </section>
+
+      <section className="home-discovery" aria-labelledby="discover-heading">
+        <div className="home-discovery-art"><Image src="/images/category-breakfast.svg" alt="" width={220} height={180}/></div>
+        <div><span className="modern-benefit-label">UNE PAUSE À VOTRE RYTHME</span><h2 id="discover-heading">Le menu du jour, simplement.</h2><p>Consultez les plats disponibles et leurs tarifs publiés par le restaurant.</p><Link className="modern-primary" href="/menu">Découvrir le menu <ArrowRight size={16}/></Link></div>
       </section>
 
       <section className="modern-benefit">

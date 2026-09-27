@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { ArrowRight, ChevronDown, CircleUserRound, ClipboardList, Home, Menu as MenuIcon, QrCode, Route, ShoppingBag, Utensils, X } from './icons';
+import { ArrowRight, ChevronDown, CircleUserRound, ClipboardList, Home, QrCode, Route, ShoppingBag, Utensils } from './icons';
 
 const guestLinks = [
   { href: '/home', label: 'Accueil', icon: Home },
@@ -23,7 +23,6 @@ const clientLinks = [
 export function ClientShell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
   const [mode, setMode] = useState<'loading'|'guest'|'client'>('loading');
-  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -32,8 +31,6 @@ export function ClientShell({ children }: { children: React.ReactNode }) {
       .catch(() => { if (active) setMode('guest'); });
     return () => { active = false; };
   }, [path]);
-
-  useEffect(() => { setOpen(false); }, [path]);
 
   const hiddenShell = path === '/' || path === '/auth' || path === '/login' || path === '/register' || path === '/forgot-password' || path === '/reset-password';
   const visibleLinks = mode === 'client' ? clientLinks : guestLinks;
@@ -55,10 +52,8 @@ export function ClientShell({ children }: { children: React.ReactNode }) {
           : mode === 'guest'
             ? <><Link className="login-link" href="/login">Se connecter</Link><Link className="button button-dark header-cta" href="/register">Créer un compte <ArrowRight size={15}/></Link></>
             : <span className="shell-session-loading" aria-label="Vérification de la session" />}
-        <button className="mobile-menu-button" onClick={() => setOpen(!open)} aria-label={open ? 'Fermer le menu' : 'Ouvrir le menu'}>{open ? <X/> : <MenuIcon/>}</button>
       </div>
     </header>
-    {open && <nav className="mobile-drawer">{visibleLinks.map(({ href, label, icon: Icon }) => <Link key={href} href={href}><Icon size={18}/>{label}</Link>)}</nav>}
     {children}
     <nav className="bottom-nav" aria-label="Navigation mobile">
       {visibleLinks.slice(0, 5).map(({ href, label, icon: Icon }) => <Link key={href} href={href} className={path === href ? 'bottom-link active' : 'bottom-link'}><Icon size={19} strokeWidth={path === href ? 2.4 : 1.7}/><span>{label}</span></Link>)}
