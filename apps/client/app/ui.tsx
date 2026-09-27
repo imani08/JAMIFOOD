@@ -32,7 +32,7 @@ export function ClientShell({ children }: { children: React.ReactNode }) {
     return () => { active = false; };
   }, [path]);
 
-  const hiddenShell = path === '/' || path === '/auth' || path === '/login' || path === '/register' || path === '/forgot-password' || path === '/reset-password';
+  const hiddenShell = path === '/' || path === '/auth' || path === '/login' || path === '/register' || path === '/forgot-password' || path === '/reset-password' || path === '/activate-account' || path === '/email-verification-pending' || path === '/verify-email';
   const visibleLinks = mode === 'client' ? clientLinks : guestLinks;
 
   if (hiddenShell) return <>{children}</>;

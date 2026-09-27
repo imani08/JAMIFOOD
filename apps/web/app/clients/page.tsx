@@ -16,6 +16,7 @@ import {
   useAction,
   useData,
 } from '../../components/common';
+import { useUser } from '../../components/shell';
 
 type Client = {
   id: string;
@@ -37,6 +38,7 @@ type Client = {
   status: string;
   createdAt: string;
   updatedAt: string;
+  portalAccount?: {created?:boolean;invitationSent?:boolean;developmentUrl?:string;reason?:string;error?:string;alreadyActive?:boolean};
 };
 
 type QRHistory = {
@@ -57,6 +59,7 @@ type QRInfo = {
 
 type ClientDetail = Client & {
   qrCodes: QRInfo[];
+  account: null | {id:string;type:string;verificationStatus:string;emailVerifiedAt:string|null;createdAt:string};
 };
 
 type GeneratedQR = {
@@ -81,6 +84,7 @@ type PhotoUpload = {
 };
 
 export default function Clients() {
+  const currentUser = useUser();
   const [q, setQ] =
     useState('');
 
@@ -91,6 +95,8 @@ export default function Clients() {
     useState<ClientDetail | null>(
       null,
     );
+  const [portalInviteLink,setPortalInviteLink]=useState('');
+  const [portalMessage,setPortalMessage]=useState('');
 
   const [
     generatedToken,
@@ -126,6 +132,8 @@ export default function Clients() {
         `/clients/${id}`,
       );
 
+    setPortalInviteLink('');
+    setPortalMessage('');
     setSelected(detail);
 
     return detail;
@@ -249,6 +257,8 @@ export default function Clients() {
         await loadClient(
           client.id,
         );
+        setPortalInviteLink(client.portalAccount?.developmentUrl??'');
+        setPortalMessage(client.portalAccount?.error??(client.portalAccount?.invitationSent?'Compte portail créé et invitation envoyée.':client.portalAccount?.developmentUrl?'Compte créé. Ouvrez le lien local affiché ci-dessous.':''));
 
         return client;
       },
@@ -372,13 +382,38 @@ export default function Clients() {
           },
         );
 
-        await loadClient(
+        const refreshed=await loadClient(
           selected.id,
         );
+        if(!refreshed.account&&refreshed.email&&currentUser?.permissions.includes('clients.create')){
+          const invite=await api<{developmentUrl?:string;invitationSent:boolean}>(`/client/accounts/from-client/${selected.id}`,{});
+          await loadClient(selected.id);
+          setPortalInviteLink(invite.developmentUrl??'');
+          setPortalMessage(invite.invitationSent?'Compte portail créé et invitation envoyée.':invite.developmentUrl?'Compte créé. Ouvrez le lien local affiché ci-dessous.':'Compte portail créé, mais aucun courriel n’a pu être envoyé. Configurez le service de messagerie puis renvoyez l’invitation.');
+        }
       },
 
       'Fiche client mise à jour.',
     );
+  }
+
+  async function decideClientAccount(decision:'VERIFIED'|'REJECTED') {
+    if(!selected?.account) return;
+    await action.run(async()=>{
+      await api(`/client/verification/${selected.account!.id}`,{decision,reason:decision==='VERIFIED'?'Identité ULC contrôlée depuis la fiche client.':'Demande rejetée après vérification depuis la fiche client.'});
+      await loadClient(selected.id);
+    },decision==='VERIFIED'?'Compte client validé.':'Demande de compte rejetée.');
+  }
+
+  async function linkExistingAccount() {
+    if(!selected||!currentUser?.permissions.includes('clients.verify'))return;
+    if(!window.confirm('Rattacher au client le compte portail vérifié qui utilise le même courriel? Ses sessions seront fermées, son ancien QR révoqué et sa validation ULC remise en attente.'))return;
+    await action.run(async()=>{await api(`/clients/${selected.id}/account/link`,{});await loadClient(selected.id);},'Compte portail rattaché. La validation ULC est à effectuer.');
+  }
+
+  async function createPortalAccount() {
+    if(!selected||!currentUser?.permissions.includes('clients.create'))return;
+    await action.run(async()=>{const result=await api<{developmentUrl?:string;invitationSent:boolean;alreadyActive?:boolean}>(`/client/accounts/from-client/${selected.id}`,{});await loadClient(selected.id);setPortalInviteLink(result.developmentUrl??'');setPortalMessage(result.alreadyActive?'Ce compte portail est déjà activé.':result.invitationSent?'Invitation envoyée. Le client choisira son mot de passe depuis le lien reçu.':result.developmentUrl?'Compte créé. Ouvrez le lien local affiché ci-dessous.':'Compte portail créé, mais aucun courriel n’a pu être envoyé. Configurez le service de messagerie puis renvoyez l’invitation.');},'Compte portail prêt.');
   }
 
   async function showQr(
@@ -1049,6 +1084,22 @@ export default function Clients() {
               </button>
             </div>
           </form>
+
+          <section className="section client-verification-panel">
+            <div className="section-title">
+              <h2>Validation du compte ULC</h2>
+              <span className="badge">{selected.account?.verificationStatus ?? 'AUCUN COMPTE PORTAIL'}</span>
+            </div>
+            {selected.account ? <>
+              <p className="muted">Courriel {selected.account.emailVerifiedAt ? 'vérifié' : 'à vérifier'} · La validation ULC est indépendante de la vérification du courriel.</p>
+              {selected.account.verificationStatus === 'PENDING' && currentUser?.permissions.includes('clients.verify') && <div className="actions"><button className="primary" disabled={action.busy} onClick={()=>void decideClientAccount('VERIFIED')}>Valider le compte</button><button className="danger" disabled={action.busy} onClick={()=>void decideClientAccount('REJECTED')}>Rejeter la demande</button></div>}
+              {!selected.account.emailVerifiedAt&&currentUser?.permissions.includes('clients.create')&&<button className="secondary" disabled={action.busy} onClick={()=>void createPortalAccount()}>Envoyer ou renvoyer le lien d’activation</button>}
+              {selected.account.verificationStatus === 'PENDING' && !currentUser?.permissions.includes('clients.verify') && <p className="muted">Votre rôle ne permet pas de valider les comptes. Demandez la permission « clients.verify » à un administrateur habilité.</p>}
+              {selected.account.verificationStatus !== 'PENDING' && <p className="muted">{selected.account.verificationStatus === 'VERIFIED' ? 'Ce compte est vérifié.' : selected.account.verificationStatus === 'REJECTED' ? 'Cette demande a été rejetée.' : `État actuel : ${selected.account.verificationStatus}.`}</p>}
+            </> : <><p className="muted">Aucun compte portail n’est associé à cette fiche. Un compte peut être créé avec le courriel enregistré, puis le client choisira son mot de passe depuis le lien d’activation envoyé. Si un compte existe déjà avec ce courriel, utilisez le rattachement sécurisé.</p>{selected.email&&currentUser?.permissions.includes('clients.create')&&<button className="primary" disabled={action.busy} onClick={()=>void createPortalAccount()}>Créer le compte portail pour {selected.email}</button>}{!selected.email&&<p className="muted">Ajoutez d’abord un courriel à cette fiche et enregistrez-la.</p>}{selected.email&&currentUser?.permissions.includes('clients.verify')&&<button className="secondary" disabled={action.busy} onClick={()=>void linkExistingAccount()}>Rattacher un compte déjà vérifié</button>}{!currentUser?.permissions.includes('clients.create')&&<p className="muted">Votre rôle ne permet pas de créer un compte portail.</p>}</>}
+            {portalInviteLink&&<p className="muted">Lien de développement : <a href={portalInviteLink}>activer le compte portail</a></p>}
+            {portalMessage&&<p className="muted" role="status">{portalMessage}</p>}
+          </section>
 
           <div className="section">
             <div className="section-title">

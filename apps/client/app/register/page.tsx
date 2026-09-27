@@ -22,8 +22,11 @@ export default function RegisterPage() {
     const data=new FormData(event.currentTarget);
     const value=(key:string)=>String(data.get(key)??'').trim();
     try {
-      await clientApi('client/register',{method:'POST',body:{type:kind,firstName:value('firstName'),lastName:value('lastName'),email:value('email'),password:value('password'),confirmPassword:value('confirmPassword'),ulcNumber:value('ulcNumber'),faculty:value('faculty'),promotion:value('promotion'),phone:value('phone')||undefined}});
-      router.push('/home');
+      const result=await clientApi<{emailSent:boolean;developmentUrl?:string}>('client/register',{method:'POST',body:{type:kind,firstName:value('firstName'),lastName:value('lastName'),email:value('email'),password:value('password'),confirmPassword:value('confirmPassword'),ulcNumber:value('ulcNumber'),faculty:value('faculty'),promotion:value('promotion'),phone:value('phone')||undefined}});
+      sessionStorage.setItem('jami-verification-email',value('email'));
+      sessionStorage.setItem('jami-verification-sent',String(result.emailSent));
+      if(result.developmentUrl)sessionStorage.setItem('jami-verification-dev-url',result.developmentUrl);
+      router.push('/email-verification-pending');
       router.refresh();
     } catch(cause) {
       setError(cause instanceof Error?cause.message:'Inscription impossible.');

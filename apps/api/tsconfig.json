@@ -18,5 +18,10 @@
   },
   "include": [
     "src"
-  ]
+  ],
+  "watchOptions": {
+    "watchFile": "dynamicPriorityPolling",
+    "watchDirectory": "dynamicPriorityPolling",
+    "fallbackPolling": "dynamicPriority"
+  }
 }

@@ -26,6 +26,14 @@ async function restrictTarget(tx: Tx, actor: AuthRequest['actor'], id: string) {
   const roles=await tx.userRole.findMany({where:{userId:id},include:{role:true}});
   await restrictDelegation(tx,actor,roles.map(entry=>entry.role.code));
 }
+async function protectLastDirection(tx: Tx, id: string, status: 'ACTIVE'|'DISABLED'|'LOCKED', roleCodes?: string[]) {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended('jami:last-active-direction', 0))`;
+  const current = await tx.userRole.findMany({where:{userId:id},include:{role:true}});
+  const nextRoles = roleCodes ?? current.map(item=>item.role.code);
+  if (status === 'ACTIVE' && nextRoles.includes('DIRECTION')) return;
+  const remaining = await tx.user.count({where:{status:'ACTIVE',roles:{some:{role:{code:'DIRECTION'}}},id:{not:id}}});
+  if (remaining < 1) throw new DomainError('LAST_ACTIVE_DIRECTION','Au moins un compte Direction doit rester actif.',409);
+}
 
 const roleCodesSchema = z
   .array(z.string().trim().min(1).max(80))
@@ -354,6 +362,8 @@ export class UsersController {
               400,
             );
           }
+          const directionTarget=await tx.user.findUniqueOrThrow({where:{id},select:{status:true}});
+          await protectLastDirection(tx,id,directionTarget.status,uniqueRoleCodes);
         }
 
         await tx.user.update({
@@ -459,6 +469,7 @@ export class UsersController {
             404,
           );
         }
+        await protectLastDirection(tx,id,body.status);
 
         const user = await tx.user.update({
           where: { id },

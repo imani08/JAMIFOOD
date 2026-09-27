@@ -249,6 +249,7 @@ model ClientAccount {
   passwordHash       String
   type               ClientAccountType
   verificationStatus ClientVerificationStatus  @default(PENDING)
+  emailVerifiedAt    DateTime?
   verifiedAt         DateTime?
   verifiedById       String?                   @db.Uuid
   createdAt          DateTime                  @default(now())
@@ -256,8 +257,22 @@ model ClientAccount {
   client             Client                    @relation(fields: [clientId], references: [id], onDelete: Cascade)
   sessions           ClientSession[]
   events             ClientPortalEvent[]
+  authTokens          ClientAuthToken[]
 
   @@index([verificationStatus, createdAt])
+}
+
+model ClientAuthToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  accountId String   @db.Uuid
+  purpose   String
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+  account   ClientAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  @@index([accountId, purpose, createdAt])
+  @@index([expiresAt])
 }
 
 model ClientSession {
@@ -565,6 +580,11 @@ model Order {
   paymentRequired Boolean              @default(true)
   ticketTokenHash String?              @unique
   totalAmount     Decimal              @db.Decimal(18, 2)
+  commercialTotal Decimal              @default(0) @db.Decimal(18, 2)
+  coveredAmount   Decimal              @default(0) @db.Decimal(18, 2)
+  mealRightId     String?              @unique @db.Uuid
+  clientIdempotencyKey String?          @unique
+  clientRequestHash String?
   currency        Currency
   createdAt       DateTime             @default(now())
   updatedAt       DateTime             @updatedAt

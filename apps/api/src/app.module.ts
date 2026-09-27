@@ -32,6 +32,7 @@ import { CatalogController } from './catalog';
 import { ApiExceptionFilter } from './http';
 import { UsersController } from './users';
 import { ClientPortalController, ClientPortalService } from './client-portal';
+import { MailService } from './mail.service';
 
 @Module({
   controllers: [
@@ -59,6 +60,7 @@ import { ClientPortalController, ClientPortalService } from './client-portal';
     OrdersService,
     MealsService,
     ClientPortalService,
+    MailService,
     {
       provide: APP_GUARD,
       useClass: AccessGuard,

@@ -905,6 +905,13 @@ const products =
         },
       });
 
+      const reservation = await tx.mealReservation.findUnique({where:{orderId:id}});
+      if(reservation) {
+        await tx.$queryRaw`SELECT id FROM "MealRight" WHERE id = ${reservation.mealRightId}::uuid FOR UPDATE`;
+        await tx.mealRight.updateMany({where:{id:reservation.mealRightId,status:'RESERVED'},data:{status:'AVAILABLE',reservedAt:null}});
+        await tx.mealReservation.delete({where:{id:reservation.id}});
+      }
+
       await audit(
         tx,
         actorId,
@@ -1306,6 +1313,8 @@ const refundable =
         const delivery = await tx.delivery.findUnique({where:{orderId:id}});
         if(!delivery || delivery.courierId !== actorId) throw new DomainError('FORBIDDEN','Cette livraison est affectée à un autre livreur.',403);
         await tx.delivery.update({where:{orderId:id},data:{status:'DELIVERED',deliveredAt:new Date()}});
+      }
+      if(status === 'DELIVERED' || status === 'SERVED') {
         const reservation = await tx.mealReservation.findUnique({where:{orderId:id}});
         if(reservation) {
           await tx.$queryRaw`SELECT id FROM "MealRight" WHERE id = ${reservation.mealRightId}::uuid FOR UPDATE`;

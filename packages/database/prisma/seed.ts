@@ -49,9 +49,9 @@ for (const [username, roleCode] of demoUsers) {
   }
   const admin=await db.user.findUniqueOrThrow({where:{username:'direction.demo'}});
   for(const [code,label] of [['ETUDIANT_HOME','Étudiant résident Home'],['ETUDIANT_EXTERNE','Étudiant externe'],['PERSONNEL_ULC','Personnel ULC']]) await db.clientCategory.upsert({where:{code},update:{},create:{code,label}});
-  for(const [code,name,price,services] of [['PREMIUM','Premium intégral','140',['BREAKFAST','LUNCH','DINNER']],['COMBINEE','Combinée','110',['LUNCH','DINNER']],['REPAS','Repas','60',['MAIN']],['BREAKFAST','Petit-déjeuner','40',['BREAKFAST']]] as const) {
+  for(const [code,name,price,services,serviceQuotas,deliveryIncluded] of [['PREMIUM','Premium intégral','140',['BREAKFAST','LUNCH','DINNER'],{BREAKFAST:1,LUNCH:1,DINNER:1},true],['COMBINEE','Combinée','110',['LUNCH','DINNER'],{LUNCH:1,DINNER:1},false],['REPAS','Repas','60',['MAIN'],{MAIN:1},false],['BREAKFAST','Petit-déjeuner','40',['BREAKFAST'],{BREAKFAST:1},false]] as const) {
     const plan=await db.subscriptionPlan.upsert({where:{code},update:{},create:{code,name}});
-    await db.subscriptionPlanVersion.upsert({where:{planId_version:{planId:plan.id,version:1}},update:{},create:{planId:plan.id,version:1,price,currency:'USD',services:[...services],eligibilityDays:[1,2,3,4,5,6],quotaRules:{pendingValidation:false,days:30,demo:true},effectiveFrom:new Date('2026-01-01'),status:'ACTIVE'}});
+    await db.subscriptionPlanVersion.upsert({where:{planId_version:{planId:plan.id,version:1}},update:{},create:{planId:plan.id,version:1,price,currency:'USD',services:[...services],eligibilityDays:[1,2,3,4,5,6],quotaRules:{pendingValidation:false,days:30,serviceQuotas,demo:false},deliveryIncluded,effectiveFrom:new Date('2026-01-01'),status:'ACTIVE'}});
   }
   const category=await db.productCategory.upsert({where:{code:'DEMO'},update:{},create:{code:'DEMO',label:'Menu DEMO'}});
     const productCategories = [
@@ -111,6 +111,22 @@ for (const [username, roleCode] of demoUsers) {
       baseComposition: '',
     },
   ] as const;
+
+  const approvedSupplements = [
+    ['JAMI-SUP-FOUFOU','Portion de foufou','1000'],
+    ['JAMI-SUP-CHIKWANGUE','Portion de chikwangue','1000'],
+    ['JAMI-SUP-RIZ','Portion de riz','1500'],
+    ['JAMI-SUP-BANANES','Portion de bananes frites','2000'],
+  ] as const;
+
+  const approvedMeal=await db.product.upsert({where:{sku:'JAMI-REPAS-COMPLET'},update:{name:'Repas complet étudiant',description:'Repas étudiant acheté à l’unité.',baseComposition:'Accompagnement · Légumes · Portion de viande ou poisson · Fruit du jour',saleUnit:'repas',categoryId:mealCategory.id},create:{sku:'JAMI-REPAS-COMPLET',name:'Repas complet étudiant',description:'Repas étudiant acheté à l’unité.',baseComposition:'Accompagnement · Légumes · Portion de viande ou poisson · Fruit du jour',saleUnit:'repas',categoryId:mealCategory.id,active:true,available:true}});
+  for(const categoryCode of ['ETUDIANT_HOME','ETUDIANT_EXTERNE']) { const pp=await db.productPrice.upsert({where:{productId_categoryCode:{productId:approvedMeal.id,categoryCode}},update:{},create:{productId:approvedMeal.id,categoryCode}});if(!(await db.priceVersion.findFirst({where:{productPriceId:pp.id,status:'ACTIVE'}})))await db.priceVersion.create({data:{productPriceId:pp.id,version:((await db.priceVersion.aggregate({where:{productPriceId:pp.id},_max:{version:true}}))._max.version??0)+1,amount:'8000',currency:'CDF',effectiveFrom:new Date(),status:'ACTIVE',createdById:admin.id}}); }
+
+  for (const [sku,name,price] of approvedSupplements) {
+    const product=await db.product.upsert({where:{sku},update:{name,categoryId:(await db.productCategory.findUniqueOrThrow({where:{code:'SUPPLEMENT'}})).id,saleUnit:'portion',description:null,baseComposition:null,active:true,available:true},create:{sku,name,categoryId:(await db.productCategory.findUniqueOrThrow({where:{code:'SUPPLEMENT'}})).id,saleUnit:'portion',active:true,available:true}});
+    const pp=await db.productPrice.upsert({where:{productId_categoryCode:{productId:product.id,categoryCode:'ETUDIANT_EXTERNE'}},update:{},create:{productId:product.id,categoryCode:'ETUDIANT_EXTERNE'}});
+    if(!(await db.priceVersion.findFirst({where:{productPriceId:pp.id,status:'ACTIVE'}}))) await db.priceVersion.create({data:{productPriceId:pp.id,version:((await db.priceVersion.aggregate({where:{productPriceId:pp.id},_max:{version:true}}))._max.version??0)+1,amount:price,currency:'CDF',effectiveFrom:new Date(),status:'ACTIVE',createdById:admin.id}});
+  }
 
   for (const item of demoProducts) {
     const product = await db.product.upsert({

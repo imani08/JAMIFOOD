@@ -42,6 +42,7 @@ import {
   audit,
   mutate,
 } from './transaction';
+import { ClientPortalService } from './client-portal';
 
 const photoObjectKeySchema =
   z
@@ -67,6 +68,9 @@ const clientUpdateSchema =
       'Aucune modification fournie.',
     );
 
+const normalizedName=(value:string)=>value.normalize('NFKC').trim().toLocaleLowerCase('fr');
+const sameIdentity=(first:string,last:string,category:string,otherFirst:string,otherLast:string,otherCategory:string)=>normalizedName(first)===normalizedName(otherFirst)&&normalizedName(last)===normalizedName(otherLast)&&category===otherCategory;
+
 const mergeSchema = z
   .object({
     targetClientId: uuid,
@@ -77,8 +81,9 @@ const scanSchema = z
   .object({
     token: z
       .string()
-      .min(20)
-      .max(200),
+      .trim()
+      .min(20, 'Saisissez le code complet affiché sous le QR Code.')
+      .max(200, 'Le code QR est invalide.'),
   })
   .strict();
 
@@ -143,9 +148,11 @@ export class ClientsService {
   constructor(
     private readonly prisma:
       PrismaService,
+    private readonly portal:
+      ClientPortalService,
   ) {}
 
-  create(
+  async create(
     input: unknown,
     key:
       | string
@@ -157,7 +164,7 @@ export class ClientsService {
         input,
       );
 
-    return mutate(
+    const client = await mutate(
       this.prisma,
       'clients.create',
       key,
@@ -258,7 +265,16 @@ export class ClientsService {
 
         return client;
       },
-    );
+    ) as { id: string; [key: string]: unknown };
+    let portalAccount: Record<string, unknown> = { created: false, reason: 'EMAIL_REQUIRED' };
+    if (data.email) {
+      try {
+        portalAccount = await this.portal.provisionExistingClient(client.id, actorId);
+      } catch (error) {
+        portalAccount = { created: false, error: error instanceof DomainError ? error.message : 'Compte portail non créé. Réessayez depuis la fiche client.' };
+      }
+    }
+    return { ...client, portalAccount };
   }
 
   update(
@@ -539,6 +555,16 @@ export class ClientsService {
           include: {
             category: true,
 
+            account: {
+              select: {
+                id: true,
+                type: true,
+                verificationStatus: true,
+                emailVerifiedAt: true,
+                createdAt: true,
+              },
+            },
+
             qrCodes: {
               orderBy: {
                 issuedAt:
@@ -567,6 +593,38 @@ export class ClientsService {
     }
 
     return client;
+  }
+
+  async linkExistingPortalAccount(clientId:string,actorId:string) {
+    uuid.parse(clientId);
+    const target=await this.prisma.client.findUnique({where:{id:clientId},include:{category:true,account:true}});
+    if(!target||target.status!=='ACTIVE')throw new DomainError('CLIENT_NOT_FOUND','Fiche client introuvable ou archivée.',404);
+    if(target.account)throw new DomainError('CLIENT_ACCOUNT_EXISTS','Un compte portail est déjà lié à cette fiche.',409);
+    if(!target.email)throw new DomainError('CLIENT_EMAIL_REQUIRED','Enregistrez d’abord le courriel vérifié du client sur sa fiche.',400);
+    const candidate=await this.prisma.clientAccount.findUnique({where:{email:target.email.trim().toLowerCase()},include:{client:{include:{category:true,_count:{select:{orders:true,subscriptions:true}}}}}});
+    if(!candidate)throw new DomainError('CLIENT_ACCOUNT_NOT_FOUND','Aucun compte portail ne correspond au courriel de cette fiche.',404);
+    if(candidate.clientId===target.id)throw new DomainError('CLIENT_ACCOUNT_EXISTS','Un compte portail est déjà lié à cette fiche.',409);
+    if(!candidate.emailVerifiedAt)throw new DomainError('CLIENT_ACCOUNT_EMAIL_UNVERIFIED','Le propriétaire doit d’abord vérifier son adresse e-mail.',409);
+    if(candidate.verificationStatus==='SUSPENDED')throw new DomainError('CLIENT_ACCOUNT_SUSPENDED','Ce compte portail est suspendu et ne peut pas être rattaché.',409);
+    if(!sameIdentity(target.firstName,target.lastName,target.category.code,candidate.client.firstName,candidate.client.lastName,candidate.client.category.code))throw new DomainError('CLIENT_ACCOUNT_IDENTITY_MISMATCH','Le nom ou la catégorie du compte portail ne correspond pas à cette fiche.',409);
+    if(candidate.client._count.orders>0||candidate.client._count.subscriptions>0)throw new DomainError('CLIENT_ACCOUNT_HAS_ACTIVITY','Ce compte possède déjà des commandes ou abonnements sur une autre fiche. Une fusion vérifiée est nécessaire avant le rattachement.',409);
+    return this.prisma.$transaction(async tx=>{
+      await tx.$queryRaw`SELECT "id" FROM "Client" WHERE "id" IN (${clientId}::uuid,${candidate.clientId}::uuid) ORDER BY "id" FOR UPDATE`;
+      const [lockedTarget,account]=await Promise.all([
+        tx.client.findUnique({where:{id:clientId},include:{category:true,account:true}}),
+        tx.clientAccount.findUnique({where:{id:candidate.id},include:{client:{include:{category:true,_count:{select:{orders:true,subscriptions:true}}}}}}),
+      ]);
+      if(!lockedTarget||lockedTarget.status!=='ACTIVE'||lockedTarget.account)throw new DomainError('CLIENT_ACCOUNT_EXISTS','Cette fiche a changé; rechargez-la avant de réessayer.',409);
+      if(!account||account.clientId!==candidate.clientId||account.email.toLowerCase()!==lockedTarget.email?.trim().toLowerCase()||!account.emailVerifiedAt)throw new DomainError('CLIENT_ACCOUNT_CHANGED','Le compte portail a changé. Rechargez la fiche et réessayez.',409);
+      if(!sameIdentity(lockedTarget.firstName,lockedTarget.lastName,lockedTarget.category.code,account.client.firstName,account.client.lastName,account.client.category.code)||account.client._count.orders>0||account.client._count.subscriptions>0)throw new DomainError('CLIENT_ACCOUNT_IDENTITY_MISMATCH','Le compte portail ne peut pas être rattaché à cette fiche.',409);
+      const activeCodes=await tx.qRCode.findMany({where:{clientId:account.clientId,status:'ACTIVE'},select:{id:true}});
+      for(const code of activeCodes)await tx.qRCode.update({where:{id:code.id},data:{status:'REVOKED',revokedAt:new Date(),history:{create:{action:'REVOKED_ACCOUNT_RELINKED',actorId,metadata:{targetClientId:clientId}}}}});
+      await tx.clientAccount.update({where:{id:account.id},data:{clientId,verificationStatus:'PENDING',verifiedAt:null,verifiedById:null}});
+      await tx.clientSession.deleteMany({where:{accountId:account.id}});
+      await tx.clientPortalEvent.create({data:{accountId:account.id,action:'ACCOUNT_LINKED_TO_CLIENT',metadata:{previousClientId:candidate.clientId,targetClientId:clientId}}});
+      await tx.auditLog.create({data:{actorId,action:'CLIENT_PORTAL_ACCOUNT_RELINKED',entityType:'ClientAccount',entityId:account.id,oldValue:{clientId:candidate.clientId,verificationStatus:account.verificationStatus},newValue:{clientId,verificationStatus:'PENDING'},metadata:{targetClientId:clientId}}});
+      return {linked:true,verificationStatus:'PENDING' as const};
+    });
   }
 
   async controlCard(
@@ -879,6 +937,12 @@ export class ClientsService {
         const token =
           newQrToken();
 
+        // Retire the current code before inserting its replacement so the
+        // partial unique index on one ACTIVE QR per client remains valid.
+        for (const old of active) {
+          await tx.qRCode.update({where:{id:old.id},data:{status:'REPLACED',revokedAt:new Date(),history:{create:{action:'REPLACED',actorId}}}});
+        }
+
         const newCode =
           await tx.qRCode.create({
             data: {
@@ -899,50 +963,7 @@ export class ClientsService {
             },
           });
 
-        for (
-          let index = 0;
-          index <
-          active.length;
-          index++
-        ) {
-          const old =
-            active[index];
-
-          await tx.qRCode.update({
-            where: {
-              id: old.id,
-            },
-
-            data: {
-              status:
-                'REPLACED',
-
-              revokedAt:
-                new Date(),
-
-              ...(index === 0
-                ? {
-                    replacedById:
-                      newCode.id,
-                  }
-                : {}),
-
-              history: {
-                create: {
-                  action:
-                    'REPLACED',
-
-                  actorId,
-
-                  metadata: {
-                    replacedById:
-                      newCode.id,
-                  },
-                },
-              },
-            },
-          });
-        }
+        await tx.qRCode.update({where:{id:active[0].id},data:{replacedById:newCode.id,history:{create:{action:'REPLACEMENT_LINKED',actorId,metadata:{replacedById:newCode.id}}}}});
 
         await audit(
           tx,
@@ -1459,6 +1480,12 @@ export class ClientsController {
           id,
         ),
     };
+  }
+
+  @Require('clients.verify')
+  @Post(':id/account/link')
+  async linkPortalAccount(@Param('id') id:string,@Req() req:AuthRequest) {
+    return {success:true,data:await this.clients.linkExistingPortalAccount(id,req.actor.id)};
   }
 
   @Require('clients.update')

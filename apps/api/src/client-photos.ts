@@ -63,7 +63,7 @@ const types: Record<
   },
 };
 
-function photoDirectory() {
+export function photoDirectory() {
   return resolve(
     process.env.CLIENT_PHOTO_DIR ??
       'storage/client-photos',
@@ -220,7 +220,7 @@ export class ClientPhotosController {
     response: Response,
   ) {
     if (
-      !/^[0-9a-f-]{36}\.(jpg|png|webp)$/i.test(
+      !/^(?:[0-9a-f]{32}|[0-9a-f-]{36})\.(jpg|png|webp)$/i.test(
         filename,
       )
     ) {

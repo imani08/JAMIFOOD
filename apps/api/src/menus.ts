@@ -162,6 +162,30 @@ export class MenusController {
     private readonly db: PrismaService,
   ) {}
 
+  @Public()
+  @Get('commercial-offers')
+  async commercialOffers() {
+    const now = new Date();
+    const [plans, products] = await Promise.all([
+      this.db.subscriptionPlan.findMany({
+        where: { active: true, code: { in: ['PREMIUM','COMBINEE','REPAS','BREAKFAST'] } }, orderBy: { name: 'asc' },
+        include: { versions: { where: { status: 'ACTIVE', effectiveFrom: { lte: now }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }] }, orderBy: { version: 'desc' }, take: 1 } },
+      }),
+      this.db.product.findMany({
+        where: { active: true, available: true, sku: { in: ['JAMI-REPAS-COMPLET', 'JAMI-SUP-FOUFOU', 'JAMI-SUP-CHIKWANGUE', 'JAMI-SUP-RIZ', 'JAMI-SUP-BANANES'] } },
+        include: { prices: { where: { categoryCode: process.env.PUBLIC_PRICE_CATEGORY_CODE ?? 'ETUDIANT_EXTERNE' }, include: { versions: { where: { status: 'ACTIVE', effectiveFrom: { lte: now }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }] }, orderBy: { version: 'desc' }, take: 1 } } } },
+      }),
+    ]);
+    const productBySku = new Map(products.map(product => [product.sku, product]));
+    const meal = productBySku.get('JAMI-REPAS-COMPLET');
+    const mealPrice = meal?.prices[0]?.versions[0];
+    return { success: true, data: {
+      meal: meal && mealPrice ? { name: meal.name, description: meal.description, composition: meal.baseComposition, amount: mealPrice.amount.toString(), currency: mealPrice.currency } : null,
+      supplements: ['JAMI-SUP-FOUFOU','JAMI-SUP-CHIKWANGUE','JAMI-SUP-RIZ','JAMI-SUP-BANANES'].flatMap(sku => { const p = productBySku.get(sku); const price = p?.prices[0]?.versions[0]; return p && price ? [{ id:p.id, name: p.name, amount: price.amount.toString(), currency: price.currency, saleUnit: p.saleUnit }] : []; }),
+      plans: [...plans.flatMap(plan => { const version = plan.versions[0]; return version ? [{ code: plan.code, name: plan.name, price: version.price.toString(), currency: version.currency, services: version.services, quotaRules: version.quotaRules, deliveryIncluded: version.deliveryIncluded }] : []; }), { code: 'FLEX', name: 'Sur-mesure / Flex', price: null, currency: null, services: [], quotaRules: {}, deliveryIncluded: false }],
+    } };
+  }
+
   // ============================================================
   // LISTE DES MENUS
   // ============================================================
