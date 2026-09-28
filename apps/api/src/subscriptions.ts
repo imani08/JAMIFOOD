@@ -29,6 +29,7 @@ import { z } from 'zod';
 import {
   AuthRequest,
   Require,
+  RequireAny,
 } from './auth';
 
 import {
@@ -438,9 +439,7 @@ export class SubscriptionsController {
    * retournées pour préserver
    * l'historique.
    */
-  @Require(
-    'subscriptions.read',
-  )
+  @RequireAny('subscriptions.read','subscriptions.create')
   @Get('plans')
   async plans() {
     return {
@@ -498,6 +497,7 @@ export class SubscriptionsController {
       q
         ? {
             client: {
+              status: 'ACTIVE' as const,
               OR: [
                 {
                   firstName: {
@@ -1232,8 +1232,6 @@ async alerts() {
       quotaRules:
         rules.data,
 
-      deliveryIncluded:
-        version.deliveryIncluded,
     }),
   ) as Prisma.InputJsonValue;
 
@@ -1272,8 +1270,6 @@ async alerts() {
                 balance:
                   version.price,
 
-                deliveryIncluded:
-                  version.deliveryIncluded,
 
                 /*
                  * Snapshot :
@@ -1348,9 +1344,7 @@ async alerts() {
   /*
    * Paiement complet OU partiel.
    */
-  @Require(
-    'sales.create',
-  )
+  @RequireAny('sales.create','subscriptions.create')
   @Post(':id/payments')
   pay(
     @Param('id')
@@ -2110,8 +2104,6 @@ renew(
             quotaRules:
               rules.data,
 
-            deliveryIncluded:
-              version.deliveryIncluded,
           }),
         ) as Prisma.InputJsonValue;
 
@@ -2155,8 +2147,6 @@ renew(
 
               serviceSnapshot,
 
-              deliveryIncluded:
-                version.deliveryIncluded,
 
               rights: {
                 create:

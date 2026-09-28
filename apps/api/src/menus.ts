@@ -18,7 +18,7 @@ import { z } from 'zod';
 
 import {
   AuthRequest, Public,
-  Require,
+  Require, RequireAny,
 } from './auth';
 
 import { DomainError } from './http';
@@ -218,7 +218,7 @@ export class MenusController {
     return { success: true, data: {
       meal: meal && mealPrice ? { name: meal.name, description: meal.description, composition: meal.baseComposition, amount: mealPrice.amount.toString(), currency: mealPrice.currency } : null,
       supplements: ['JAMI-SUP-FOUFOU','JAMI-SUP-CHIKWANGUE','JAMI-SUP-RIZ','JAMI-SUP-BANANES'].flatMap(sku => { const p = productBySku.get(sku); const price = p?.prices[0]?.versions[0]; return p && price ? [{ id:p.id, name: p.name, amount: price.amount.toString(), currency: price.currency, saleUnit: p.saleUnit }] : []; }),
-      plans: [...plans.flatMap(plan => { const version = plan.versions[0]; return version ? [{ code: plan.code, name: plan.name, price: version.price.toString(), currency: version.currency, services: version.services, quotaRules: version.quotaRules, deliveryIncluded: version.deliveryIncluded }] : []; }), { code: 'FLEX', name: 'Sur-mesure / Flex', price: null, currency: null, services: [], quotaRules: {}, deliveryIncluded: false }],
+      plans: [...plans.flatMap(plan => { const version = plan.versions[0]; return version ? [{ code: plan.code, name: plan.name, price: version.price.toString(), currency: version.currency, services: version.services, quotaRules: version.quotaRules }] : []; }), { code: 'FLEX', name: 'Sur-mesure / Flex', price: null, currency: null, services: [], quotaRules: {} }],
     } };
   }
 
@@ -1192,7 +1192,7 @@ export class MenusController {
   // MENU PUBLIÉ POUR LE POS
   // ============================================================
 
-  @Require('sales.create')
+  @RequireAny('sales.create','orders.manage')
   @Get('active')
   async active(
     @Query('date')
@@ -1275,6 +1275,12 @@ export class MenusController {
       };
     }
 
+    const groups = await this.db.productOptionGroup.findMany({ where: { productId: { in: version.items.map(item => item.productId) }, active: true }, orderBy: { position: 'asc' }, include: { options: { where: { active: true }, orderBy: { position: 'asc' } } } });
+    const groupByProduct = new Map<string, typeof groups>();
+    for (const group of groups) groupByProduct.set(group.productId, [...(groupByProduct.get(group.productId) ?? []), group]);
+    const linkedIds = [...new Set(groups.flatMap(group => group.options.flatMap(option => option.linkedProductId ? [option.linkedProductId] : [])))];
+    const linkedProducts = linkedIds.length ? await this.db.product.findMany({ where: { id: { in: linkedIds }, active: true, available: true }, include: { stockItem: true, prices: { where: { categoryCode: category }, include: { versions: { where: { status: 'ACTIVE', effectiveFrom: { lte: new Date() }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: new Date() } }] }, orderBy: { effectiveFrom: 'desc' }, take: 1 } } } } }) : [];
+    const linkedById = new Map(linkedProducts.map(product => [product.id, product]));
     const items =
       version.items.flatMap(
         (item) => {
@@ -1350,6 +1356,8 @@ export class MenusController {
 
               variants:
                 item.variants,
+
+              optionGroups: (groupByProduct.get(item.productId) ?? []).map(group => ({ id: group.id, name: group.name, type: group.type, required: group.required, minSelections: group.minSelections, maxSelections: group.maxSelections, options: group.options.flatMap(option => { const linked = linkedById.get(option.linkedProductId ?? ''); if (option.linkedProductId && (!linked || !linked.prices[0]?.versions[0] || (linked.stockMode === 'DIRECT' && (!linked.stockItem || !linked.stockItem.active || linked.stockItem.quantity.lt(linked.stockQuantity))))) return []; return [{ id: option.id, name: option.name, priceDelta: linked?.prices[0]?.versions[0]?.amount.toString() ?? option.priceDelta.toString(), currency: linked?.prices[0]?.versions[0]?.currency ?? option.currency, linkedProductId: option.linkedProductId }]; }) })),
 
               remaining,
 

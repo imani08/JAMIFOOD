@@ -22,16 +22,14 @@ production. Les cas prioritaires à automatiser avant toute mise en production :
 
 - R03 : deux transactions tentent de consommer le dernier `MealRight`, une seule
   réussit ; répétition avec la même clé retourne le premier résultat.
-- POS → paiement confirmé → commande CMD → bon cuisine → PREPARING → READY →
-  SERVED ; une seconde remise est refusée.
-- R06 livraison : une seule confirmation consomme le droit réservé.
+- Gestionnaire → commande WhatsApp → droit réservé → commande à retirer →
+  Caissier → remise → droit consommé → reçu ; une seconde remise est refusée.
 - R07 : 9 700 CDF payé 5 USD au taux 2 500 crée 5 USD entrants et 2 800 CDF de
   rendu, sans deuxième mouvement.
 - R08 : paiement Mobile Money `PENDING`, puis confirmation répétée, sans double
   encaissement.
 - R09 : ancien prix/taux conservé après une nouvelle version.
 - R10 clôture et R11 refus RBAC.
-- RBAC multi-rôles : annulation, accès abonnements/clients, rapports, paiements,
-  remboursements, origine CSRF et affectation/livraison avec UUID d’un autre
-  utilisateur.
+- RBAC multi-rôles : annulation, accès abonnements/abonnés, rapports, paiements,
+  remboursements et origine CSRF.
 - R12 : outbox Offline répétée, pertes LAN/redémarrage et conflits visibles.

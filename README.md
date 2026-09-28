@@ -1,8 +1,9 @@
 # JAMI FOOD
 
-Plateforme de gestion opérationnelle du restaurant ULC. Consultez
-[`ARCHITECTURE.md`](ARCHITECTURE.md), [`DATA_MODEL.md`](DATA_MODEL.md) et
-[`COMPLIANCE_MATRIX.md`](COMPLIANCE_MATRIX.md) avant une mise en production.
+Application interne de gestion du restaurant ULC : abonnés, abonnements,
+commandes WhatsApp saisies manuellement, POS anonyme, ventes, caisse et stock.
+Les repas abonnés sont préparés hors application puis remis au comptoir ; il
+n’existe ni compte client, ni workflow cuisine, ni livraison dans le produit.
 
 ## Développement avec Docker Compose
 

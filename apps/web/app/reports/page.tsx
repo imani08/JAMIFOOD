@@ -20,8 +20,7 @@ import {
 
 type ServiceMode =
   | 'DINE_IN'
-  | 'TAKEAWAY'
-  | 'DELIVERY';
+  | 'TAKEAWAY';
 
 type Report = {
   date: string;
@@ -87,10 +86,6 @@ function serviceLabel(
 
   if (value === 'TAKEAWAY') {
     return 'À emporter';
-  }
-
-  if (value === 'DELIVERY') {
-    return 'Livraison';
   }
 
   return 'Tous';
@@ -384,9 +379,6 @@ export default function Reports() {
                 À emporter
               </option>
 
-              <option value="DELIVERY">
-                Livraison
-              </option>
             </select>
           </label>
 

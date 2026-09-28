@@ -14,11 +14,6 @@ x-dev-source-mounts: &dev-source-mounts
   - ./apps/web/next.config.ts:/app/apps/web/next.config.ts:ro
   - ./apps/web/tsconfig.json:/app/apps/web/tsconfig.json:ro
   - ./apps/web/package.json:/app/apps/web/package.json:ro
-  - ./apps/client/app:/app/apps/client/app
-  - ./apps/client/public:/app/apps/client/public
-  - ./apps/client/next.config.ts:/app/apps/client/next.config.ts:ro
-  - ./apps/client/tsconfig.json:/app/apps/client/tsconfig.json:ro
-  - ./apps/client/package.json:/app/apps/client/package.json:ro
   - ./packages/database/prisma:/app/packages/database/prisma
   - ./packages/database/src:/app/packages/database/src
   - ./packages/database/tsconfig.json:/app/packages/database/tsconfig.json:ro
@@ -31,9 +26,7 @@ x-dev-source-mounts: &dev-source-mounts
   - ./packages/validation/package.json:/app/packages/validation/package.json:ro
   - root_node_modules:/app/node_modules
   - product_images:/app/storage/product-images
-  - client_photos:/app/storage/client-photos
   - web_next:/app/apps/web/.next
-  - client_next:/app/apps/client/.next
 
 services:
   postgres:
@@ -63,24 +56,12 @@ services:
       API_HOST: 0.0.0.0
       API_PORT: 3001
       DATABASE_URL: postgresql://jami:${POSTGRES_PASSWORD:-jami_dev_password}@postgres:5432/jami_food?schema=public
-      WEB_ORIGIN: http://localhost:3000,http://localhost:3002
+      WEB_ORIGIN: http://localhost:3000
       COOKIE_SECURE: "false"
       SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-30}
       RESTAURANT_TIMEZONE: ${RESTAURANT_TIMEZONE:-Africa/Kinshasa}
       PUBLIC_PRICE_CATEGORY_CODE: ${PUBLIC_PRICE_CATEGORY_CODE:-ETUDIANT_EXTERNE}
-      QR_TOKEN_ENCRYPTION_KEY: ${QR_TOKEN_ENCRYPTION_KEY:-}
-      CLIENT_APP_URL: ${CLIENT_APP_URL:-http://localhost:3002}
-      CLIENT_PUBLIC_URL: ${CLIENT_PUBLIC_URL:-http://localhost:3002}
-      MAIL_MODE: ${MAIL_MODE:-development}
-      RESEND_API_KEY: ${RESEND_API_KEY:-}
-      MAIL_FROM: ${MAIL_FROM:-JAMI FOOD <noreply@example.com>}
-      SMTP_HOST: ${SMTP_HOST:-}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_SECURE: ${SMTP_SECURE:-false}
-      SMTP_USER: ${SMTP_USER:-}
-      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       PRODUCT_IMAGE_DIR: /app/storage/product-images
-      CLIENT_PHOTO_DIR: /app/storage/client-photos
       TPE_MODE: ${TPE_MODE:-MOCK}
       TPE_PROVIDER: ${TPE_PROVIDER:-}
       TPE_TERMINAL_ID: ${TPE_TERMINAL_ID:-}
@@ -120,29 +101,8 @@ services:
         condition: service_healthy
     command: ["sh", "-c", "pnpm --filter @jami/web dev"]
 
-  client:
-    restart: unless-stopped
-    build:
-      context: .
-      dockerfile: Dockerfile.client.dev
-    environment:
-      NODE_ENV: development
-      PORT: 3002
-      API_INTERNAL_URL: http://api:3001
-      NEXT_PUBLIC_API_URL: http://localhost:3001/api/v1
-      WATCHPACK_POLLING: "true"
-    volumes: *dev-source-mounts
-    ports:
-      - "3002:3002"
-    depends_on:
-      api:
-        condition: service_healthy
-    command: ["sh", "-c", "pnpm --filter @jami/client dev"]
-
 volumes:
   postgres_data:
   product_images:
-  client_photos:
   root_node_modules:
   web_next:
-  client_next:

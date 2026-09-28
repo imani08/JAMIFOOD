@@ -5,7 +5,6 @@ import { HealthController } from './health.controller';
 import { PrismaService } from './prisma.service';
 import { ProductImagesController } from './product-images';
 import { MenusController } from './menus';
-import { ClientPhotosController } from './client-photos';
 import {
   AccessGuard,
   AuthController,
@@ -15,24 +14,13 @@ import {
   ClientsController,
   ClientsService,
 } from './clients';
-import {
-  DeliveryController,
-  KitchenController,
-  OrdersController,
-  OrdersService,
-} from './orders';
-import {
-  MealsController,
-  MealsService,
-} from './meals';
+import { OrdersController, OrdersService } from './orders';
 import { CashController } from './cash';
 import { StockController } from './stock';
 import { SubscriptionsController } from './subscriptions';
 import { CatalogController } from './catalog';
 import { ApiExceptionFilter } from './http';
 import { UsersController } from './users';
-import { ClientPortalController, ClientPortalService } from './client-portal';
-import { MailService } from './mail.service';
 import { PaymentTerminalService } from './payment-terminal/payment-terminal.service';
 import { MockTerminalProvider } from './payment-terminal/providers/mock.provider';
 import { ManualTerminalProvider } from './payment-terminal/providers/manual.provider';
@@ -44,27 +32,19 @@ import { IntegratedTerminalProvider } from './payment-terminal/providers/integra
     StockController,
     SubscriptionsController,
     CatalogController,
-    KitchenController,
     HealthController,
     AuthController,
     ClientsController,
     OrdersController,
-    MealsController,
     UsersController,
     ProductImagesController,
     MenusController,
-    ClientPhotosController,
-    DeliveryController,
-    ClientPortalController,
   ],
   providers: [
     PrismaService,
     AuthService,
     ClientsService,
     OrdersService,
-    MealsService,
-    ClientPortalService,
-    MailService,
     PaymentTerminalService,
     MockTerminalProvider,
     ManualTerminalProvider,

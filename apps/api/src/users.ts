@@ -27,12 +27,12 @@ async function restrictTarget(tx: Tx, actor: AuthRequest['actor'], id: string) {
   await restrictDelegation(tx,actor,roles.map(entry=>entry.role.code));
 }
 async function protectLastDirection(tx: Tx, id: string, status: 'ACTIVE'|'DISABLED'|'LOCKED', roleCodes?: string[]) {
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended('jami:last-active-direction', 0))`;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended('jami:last-responsable', 0))`;
   const current = await tx.userRole.findMany({where:{userId:id},include:{role:true}});
   const nextRoles = roleCodes ?? current.map(item=>item.role.code);
-  if (status === 'ACTIVE' && nextRoles.includes('DIRECTION')) return;
-  const remaining = await tx.user.count({where:{status:'ACTIVE',roles:{some:{role:{code:'DIRECTION'}}},id:{not:id}}});
-  if (remaining < 1) throw new DomainError('LAST_ACTIVE_DIRECTION','Au moins un compte Direction doit rester actif.',409);
+  if (status === 'ACTIVE' && nextRoles.includes('RESPONSABLE_RESTAURANT')) return;
+  const remaining = await tx.user.count({where:{status:'ACTIVE',roles:{some:{role:{code:'RESPONSABLE_RESTAURANT'}}},id:{not:id}}});
+  if (remaining < 1) throw new DomainError('LAST_ACTIVE_RESPONSABLE','Au moins un compte Responsable doit rester actif.',409);
 }
 
 const roleCodesSchema = z

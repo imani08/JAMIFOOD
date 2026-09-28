@@ -23,7 +23,7 @@ import {
 import { z } from 'zod';
 
 import { PrismaService } from './prisma.service';
-import { AuthRequest, Require } from './auth';
+import { AuthRequest, Require, RequireAny } from './auth';
 import {
   audit,
   mutate,
@@ -174,7 +174,7 @@ const settingsRequiringConfiguration: Record<string, z.ZodTypeAny> = {
   acompte: z.object({ enabled: z.boolean() }).passthrough(),
   flex: z.object({ enabled: z.boolean() }).passthrough(),
   report: z.object({ enabled: z.boolean() }).passthrough(),
-  livraison: z.object({ enabled: z.boolean(), fee:z.object({mode:z.literal('FREE'),amount:z.literal(0),currency:z.literal('CDF')}).optional(), zones: z.array(z.object({ name: z.string().trim().min(1).max(120).refine(name => /campus\s+ulc/i.test(name), 'La zone de livraison doit être le campus ULC.'), fee: z.number().nonnegative(), currency: z.enum(['CDF','USD']).default('CDF'), enabled:z.boolean().optional(),dropoffPoints:z.array(z.string().trim().min(1).max(120).refine(name=>/campus\s+ulc/i.test(name),'Chaque point de remise doit être situé sur le campus ULC.')).optional() }).passthrough()).refine(zones => zones.every(zone => zone.fee === 0 && zone.currency === 'CDF'), 'La livraison campus doit être gratuite (0 CDF) pour toutes les zones.').optional(),dropoffPoints:z.array(z.string().trim().min(1).max(120).refine(name=>/campus\s+ulc/i.test(name),'Chaque point de remise doit être situé sur le campus ULC.')).optional(), schedule:z.object({orderCutoffMinutes:z.number().int().nonnegative().nullable().optional(),useRestaurantServiceHours:z.boolean().optional()}).passthrough().optional(),campusOnly:z.literal(true).optional(),requirePhone:z.boolean().optional(),requireRecipient:z.boolean().optional(),requireDropoffPoint:z.boolean().optional(),requireRequestedTime:z.boolean().optional(),allowInstructions:z.boolean().optional(),courierAssignment:z.object({availableCouriersOnly:z.literal(true),clientCanChooseCourier:z.literal(false)}).passthrough().optional(),subscriptionDelivery:z.object({freeForAllCampusDeliveries:z.literal(true)}).passthrough().optional(),maxConcurrentDeliveries:z.number().int().min(1).max(100).optional(),cutoffTime:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),serviceHours:z.record(z.string(),z.object({start:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),end:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)})).optional() }).passthrough().superRefine((config,ctx)=>{if(config.enabled&&(!config.zones||config.zones.filter(zone=>zone.enabled!==false).length===0))ctx.addIssue({code:'custom',path:['zones'],message:'Activez au moins une zone de livraison campus.'});if(config.enabled&&(!config.dropoffPoints||config.dropoffPoints.length===0)&&!config.zones?.some(zone=>(zone.dropoffPoints?.length??0)>0))ctx.addIssue({code:'custom',path:['dropoffPoints'],message:'Configurez au moins un point de remise sur le campus ULC.'});if(config.fee&&(config.fee.mode!=='FREE'||config.fee.amount!==0||config.fee.currency!=='CDF'))ctx.addIssue({code:'custom',path:['fee'],message:'La livraison sur le campus doit rester gratuite en CDF.'});}),
+
   tpe: z.object({ mode: z.enum(['MANUAL', 'INTEGRATED']), provider: z.string().nullable(), realTerminalConnected: z.boolean() }).passthrough(),
 };
 
@@ -747,27 +747,6 @@ export class CatalogController {
           },
         }),
     };
-  }
-
-  @Require('clients.verify')
-  @Get('client-accounts/pending')
-  async pendingClientAccounts() {
-    return { success: true, data: await this.db.clientAccount.findMany({ where: { verificationStatus: 'PENDING' }, orderBy: { createdAt: 'asc' }, take: 100, select: { id: true, type: true, createdAt: true, email: true, client: { select: { id: true, firstName: true, lastName: true, ulcNumber: true, faculty: true, promotion: true, residency: true, phone: true, category: { select: { label: true } } } } } }) };
-  }
-
-  @Require('clients.verify')
-  @Post('client-accounts/:id/verification')
-  async decideClientAccount(@Param('id') id: string, @Body() input: unknown, @Req() req: AuthRequest) {
-    uuid.parse(id);
-    const body = z.object({ decision: z.enum(['VERIFIED', 'REJECTED']), reason: z.string().trim().min(3).max(500) }).strict().parse(input);
-    const account = await this.db.clientAccount.findUnique({ where: { id } });
-    if (!account || account.verificationStatus !== 'PENDING') throw new DomainError('VERIFICATION_UNAVAILABLE', 'Cette demande ne peut plus être traitée.', 409);
-    await this.db.$transaction(async tx => {
-      await tx.clientAccount.update({ where: { id }, data: { verificationStatus: body.decision, verifiedAt: body.decision === 'VERIFIED' ? new Date() : null, verifiedById: req.actor.id } });
-      await tx.auditLog.create({ data: { actorId: req.actor.id, action: `CLIENT_ACCOUNT_${body.decision}`, entityType: 'ClientAccount', entityId: id, oldValue: { verificationStatus: 'PENDING' }, newValue: { verificationStatus: body.decision, reason: body.reason }, metadata: { clientId: account.clientId } } });
-      await tx.clientPortalEvent.create({ data: { accountId: id, action: `ACCOUNT_${body.decision}` } });
-    });
-    return { success: true, data: { verificationStatus: body.decision } };
   }
 
   @Require('pricing.update')
@@ -1972,20 +1951,20 @@ async logs(@Query() input: unknown) {
   // RAPPORT ACTUEL
   // ============================================================
 
- @Require('reports.export')
+ @RequireAny('reports.export','sales.read')
  @Get('reports/export')
  async exportReport(@Query('from') from:string|undefined,@Query('to') to:string|undefined,@Query('serviceMode') serviceMode:string|undefined,@Res({passthrough:true}) response:Response) {
    const {data}=await this.reports(from,to,serviceMode);
    const book=new ExcelJS.Workbook();book.creator='JAMI FOOD';
    const summary=book.addWorksheet('Synthèse');summary.addRows([['JAMI FOOD',data.from,data.to],['Repas servis',data.served],['Abonnements actifs',data.subscriptions],['Paiements en attente',data.pendingPayments]]);
-   const sales=book.addWorksheet('Ventes');sales.addRow(['Devise','Montant','Commandes']);for(const row of data.sales)sales.addRow([row.currency,row._sum.totalAmount?.toString()??'0',row._count]);
-   const payments=book.addWorksheet('Encaissements bruts');payments.addRow(['Devise reçue','Moyen','Montant reçu','Monnaie rendue','Devise monnaie','Nombre']);for(const row of data.payments)payments.addRow([row.receivedCurrency,row.method,row._sum.receivedAmount?.toString()??'0',row._sum.changeAmount?.toString()??'0',row.changeCurrency??row.receivedCurrency,row._count]);
-   for(const [name,rows] of [['Remboursements',data.refunds],['Dépenses',data.expenses]] as const){const sheet=book.addWorksheet(name);sheet.addRow(['Devise','Montant']);for(const row of rows)sheet.addRow([row.currency,row._sum.amount?.toString()??'0']);}
+   const sales=book.addWorksheet('Ventes');sales.addRow(['Devise','Montant','Commandes']);for(const row of data.sales)sales.addRow([row.currency,row._sum?.totalAmount?.toString()??'0',row._count]);
+   const payments=book.addWorksheet('Encaissements bruts');payments.addRow(['Devise reçue','Moyen','Montant reçu','Monnaie rendue','Devise monnaie','Nombre']);for(const row of data.payments)payments.addRow([row.receivedCurrency,row.method,row._sum?.receivedAmount?.toString()??'0',row._sum?.changeAmount?.toString()??'0',row.changeCurrency??row.receivedCurrency,row._count]);
+   for(const [name,rows] of [['Remboursements',data.refunds],['Dépenses',data.expenses]] as const){const sheet=book.addWorksheet(name);sheet.addRow(['Devise','Montant']);for(const row of rows)sheet.addRow([row.currency,row._sum?.amount?.toString()??'0']);}
    for(const sheet of book.worksheets){sheet.getRow(1).font={bold:true};sheet.columns.forEach(column=>{column.width=26;});sheet.views=[{state:'frozen',ySplit:1}];}
    response.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');response.setHeader('Content-Disposition',`attachment; filename="rapport-${data.from}-${data.to}.xlsx"`);
    return new StreamableFile(Buffer.from(await book.xlsx.writeBuffer()));
  }
- @Require('reports.read')
+ @RequireAny('reports.read','sales.read')
 @Get('reports')
 async reports(
   @Query('from') from?: string,
@@ -2005,12 +1984,8 @@ async reports(
         .regex(/^\d{4}-\d{2}-\d{2}$/)
         .optional(),
 
-      serviceMode: z
-        .enum([
-          'DINE_IN',
-          'TAKEAWAY',
-          'DELIVERY',
-        ])
+        serviceMode: z
+        .enum(['DINE_IN', 'TAKEAWAY'])
         .optional(),
     })
     .parse({
@@ -2073,7 +2048,7 @@ async reports(
       where: {
         ...orderWhere,
 
-        paymentRequired: true,
+        sourceChannel: 'POS',
 
         status: {
           notIn: [
@@ -2131,7 +2106,6 @@ async reports(
         status: {
           in: [
             'SERVED',
-            'DELIVERED',
           ],
         },
       },

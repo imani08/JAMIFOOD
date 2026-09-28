@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Headers, Injectable, Param, Post, Query, Req } from '@nestjs/common';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { confirmPaymentSchema, createOrderSchema, pageSchema, uuid } from '@jami/validation';
 import { Prisma } from '@jami/database';
 import { localDate } from '@jami/shared';
@@ -8,10 +8,8 @@ import { PrismaService } from './prisma.service';
 import { DomainError } from './http';
 import { netPaymentReceived } from './refund-value';
 import { move } from './stock';
-import { confirmOrderAndIssueKitchenTicket } from './kitchen-ticket';
 import { consumeReservedMealRight } from './meal-consumption';
-import { courierCanAccept, effectiveCourierAvailability, rankCouriers } from './courier-availability';
-import { AuthRequest, Require } from './auth';
+import { AuthRequest, Require, RequireAny } from './auth';
 import {
   subscriptionLifecycleStatus,
 } from './subscription-status';
@@ -78,172 +76,53 @@ function paymentValue(
 }
 
 export async function finishPayment(tx: Tx, paymentId: string, actorId: string) {
-  const p = await tx.payment.findUniqueOrThrow({ where: { id: paymentId } });
-  const entries = [{ cashSessionId: p.cashSessionId, paymentId: p.id, type: p.method === 'CASH' ? 'CASH_IN' : 'DIGITAL_IN', amount: p.receivedAmount, currency: p.receivedCurrency, sourceType: 'PAYMENT', sourceId: p.id }];
-  if (p.changeAmount.gt(0)) entries.push({ cashSessionId: p.cashSessionId, paymentId: p.id, type: 'CASH_OUT', amount: p.changeAmount, currency: p.changeCurrency!, sourceType: 'PAYMENT', sourceId: p.id });
-  await tx.cashMovement.createMany({ data: entries });
- if (p.orderId) {
-  const order =
-    await tx.order.findUniqueOrThrow({
-      where: {
-        id: p.orderId,
-      },
+  const payment = await tx.payment.findUniqueOrThrow({ where: { id: paymentId } });
+  const movements = [{ cashSessionId: payment.cashSessionId, paymentId: payment.id, type: payment.method === 'CASH' ? 'CASH_IN' : 'DIGITAL_IN', amount: payment.receivedAmount, currency: payment.receivedCurrency, sourceType: 'PAYMENT', sourceId: payment.id }];
+  if (payment.changeAmount.gt(0)) movements.push({ cashSessionId: payment.cashSessionId, paymentId: payment.id, type: 'CASH_OUT', amount: payment.changeAmount, currency: payment.changeCurrency!, sourceType: 'PAYMENT', sourceId: payment.id });
+  await tx.cashMovement.createMany({ data: movements });
 
-      include: {
-        items: true,
-
-        payments: {
-          where: {
-            status: 'CONFIRMED',
-          },
-        },
-      },
-    });
-
-  if (order.status !== 'RECEIVED') {
-    throw new DomainError(
-      'ORDER_NOT_PAYABLE',
-      'Cette commande ne peut plus être payée.',
-      409,
-    );
-  }
-
-  // Total de tous les paiements
-  // confirmés de cette commande.
-  const paid =
-    order.payments.reduce(
-      (total, payment) =>
-        total.add(
-          payment.amountDue,
-        ),
-      new Decimal(0),
-    );
-
-  // Si ce n'est pas encore entièrement payé,
-  // on garde la commande en RECEIVED.
-  if (
-    paid.lt(order.totalAmount)
-  ) {
-    await audit(
-      tx,
-      actorId,
-      'ORDER_PARTIAL_PAYMENT',
-      'Order',
-      order.id,
-      {
-        paid:
-          paid.toString(),
-
-        remaining:
-          order.totalAmount
-            .sub(paid)
-            .toString(),
-      },
-    );
-  }
-
-  // Si le total est entièrement payé,
-  // la commande devient CONFIRMED.
-  if (
-    paid.gte(order.totalAmount)
-  ) {
-    // Convert this order's reservation into a sale atomically. RECEIVED orders
-    // reserve quantities; only the first successful final payment sells them.
-    if (order.menuVersionId) {
-      const menuLines = new Map<string, number>();
-      for (const item of order.items) {
-        const snapshot = item.productSnapshot as { menuVersionId?: string };
-        if (snapshot.menuVersionId === order.menuVersionId && item.productId) {
-          menuLines.set(item.productId, (menuLines.get(item.productId) ?? 0) + Number(item.quantity));
+  if (payment.orderId) {
+    const order = await tx.order.findUniqueOrThrow({ where: { id: payment.orderId } });
+    if (order.sourceChannel === 'WHATSAPP') {
+      await audit(tx, actorId, 'ORDER_EXTRA_PAID', 'Order', order.id, { paymentId: payment.id });
+    } else {
+      const paid = await tx.payment.aggregate({ where: { orderId: order.id, status: 'CONFIRMED' }, _sum: { amountDue: true } });
+      const totalPaid = paid._sum.amountDue ?? new Decimal(0);
+      if (totalPaid.gte(order.totalAmount)) {
+        const stockTotals = new Map<string, Prisma.Decimal>();
+        const lines = await tx.orderItem.findMany({ where: { orderId: order.id } });
+        for (const line of lines) {
+          const snapshot = line.productSnapshot as { stockMode?: string; stockItemId?: string; stockQuantity?: string; menuVersionId?: string };
+          if (snapshot.menuVersionId === order.menuVersionId && snapshot.menuVersionId && line.productId) {
+            const menuItem = await tx.menuItem.findUnique({ where: { menuVersionId_productId: { menuVersionId: snapshot.menuVersionId, productId: line.productId } } });
+            if (menuItem) { const qty = Math.ceil(Number(line.quantity)); const changed = await tx.menuItem.updateMany({ where: { id: menuItem.id, quantityReserved: { gte: qty } }, data: { quantityReserved: { decrement: qty }, quantitySold: { increment: qty } } }); if (!changed.count) throw new DomainError('MENU_RESERVATION_MISSING', 'La réservation du menu est absente.', 409); }
+          }
+          if (snapshot.stockMode === 'DIRECT' && snapshot.stockItemId && snapshot.stockQuantity) stockTotals.set(snapshot.stockItemId, (stockTotals.get(snapshot.stockItemId) ?? new Decimal(0)).add(line.quantity.mul(snapshot.stockQuantity)));
+          const extras = Array.isArray(line.supplementsSnapshot) ? line.supplementsSnapshot as { quantity?: number; linkedStock?: { stockMode?: string; stockItemId?: string | null; stockQuantity?: string } }[] : [];
+          for (const extra of extras) {
+            const linked = extra.linkedStock;
+            if (linked?.stockMode === 'DIRECT' && linked.stockItemId && linked.stockQuantity) {
+              const quantity = line.quantity.mul(extra.quantity ?? 1).mul(linked.stockQuantity);
+              stockTotals.set(linked.stockItemId, (stockTotals.get(linked.stockItemId) ?? new Decimal(0)).add(quantity));
+            }
+          }
         }
-      }
-      for (const [productId, quantity] of menuLines) {
-        const row = await tx.menuItem.findUnique({ where: { menuVersionId_productId: { menuVersionId: order.menuVersionId, productId } } });
-        if (row) {
-          const moved = await tx.menuItem.updateMany({
-            where: { id: row.id, quantityReserved: { gte: quantity } },
-            data: { quantityReserved: { decrement: quantity }, quantitySold: { increment: quantity } },
-          });
-          if (moved.count !== 1) throw new DomainError('MENU_RESERVATION_MISSING', 'La réservation du menu est absente; vérifiez la migration et les commandes en attente.', 409);
-        }
+        for (const [stockId, quantity] of [...stockTotals].sort(([a], [b]) => a.localeCompare(b))) await move(tx, stockId, quantity.negated(), 'DIRECT_SALE', order.id, `Vente validée : ${order.number}`, actorId);
+        await tx.order.update({ where: { id: order.id }, data: { status: 'READY', statusHistory: { create: { fromStatus: 'RECEIVED', toStatus: 'READY', actorId } } } });
+        await audit(tx, actorId, 'ORDER_PAID', 'Order', order.id, { paymentId: payment.id });
       }
     }
-    const direct = order.items.flatMap(item=>{
-      const stock=z.object({stockMode:z.literal('DIRECT'),stockItemId:z.string().uuid(),stockQuantity:z.string()}).safeParse(item.productSnapshot);
-      return stock.success ? [{...stock.data,quantity:item.quantity}] : [];
-    });
-    const linkedSupplements=order.items.flatMap(item=>{
-      const snapshots=z.array(z.object({quantity:z.number(),linkedStock:z.object({stockMode:z.string(),stockItemId:z.string().uuid().nullable(),stockQuantity:z.string()}).optional()})).safeParse(item.supplementsSnapshot);
-      return snapshots.success?snapshots.data.flatMap(supplement=>supplement.linkedStock?.stockMode==='DIRECT'&&supplement.linkedStock.stockItemId?[{stockItemId:supplement.linkedStock.stockItemId,stockQuantity:supplement.linkedStock.stockQuantity,quantity:item.quantity.mul(supplement.quantity)}]:[]):[];
-    });
-    const quantities=new Map<string,Prisma.Decimal>();
-    for(const item of [...direct,...linkedSupplements])quantities.set(item.stockItemId,(quantities.get(item.stockItemId)??new Decimal(0)).add(item.quantity.mul(item.stockQuantity)));
-    for(const [stockId,quantity] of [...quantities].sort(([a],[b])=>a.localeCompare(b)))await move(tx,stockId,quantity.negated(),'DIRECT_SALE',order.id,'Vente validée : '+order.number,actorId);
-    await confirmOrderAndIssueKitchenTicket(tx, order, actorId);
-
-    await audit(
-      tx,
-      actorId,
-      'ORDER_CONFIRMED',
-      'Order',
-      order.id,
-      {
-        paymentId: p.id,
-      },
-    );
-
-    await audit(
-      tx,
-      actorId,
-      'KITCHEN_TICKET_ISSUED',
-      'Order',
-      order.id,
-    );
   }
-}
-  if (p.subscriptionId) {
-  const sub =
-    await tx.subscription.findUniqueOrThrow({
-      where: {
-        id:
-          p.subscriptionId,
-      },
-    });
 
-  const paid =
-    sub.paidAmount.add(
-      p.amountDue,
-    );
-
-  const balance =
-    sub.amount.sub(paid);
-
-  const status =
-    subscriptionLifecycleStatus(
-      balance,
-      sub.startsOn,
-      sub.endsOn,
-    );
-
-  await tx.subscription.update({
-    where: {
-      id:
-        sub.id,
-    },
-
-    data: {
-      paidAmount:
-        paid,
-
-      balance,
-
-      status,
-    },
-  });
-}
-  await audit(tx, actorId, 'PAYMENT_CONFIRMED', 'Payment', p.id, { method: p.method, receivedAmount: p.receivedAmount.toString(), receivedCurrency: p.receivedCurrency });
-}
-@Injectable()
+  if (payment.subscriptionId) {
+    const subscription = await tx.subscription.findUniqueOrThrow({ where: { id: payment.subscriptionId } });
+    const paid = subscription.paidAmount.add(payment.amountDue);
+    const balance = subscription.amount.sub(paid);
+    const status = subscriptionLifecycleStatus(balance, subscription.startsOn, subscription.endsOn);
+    await tx.subscription.update({ where: { id: subscription.id }, data: { paidAmount: paid, balance, status } });
+  }
+  await audit(tx, actorId, 'PAYMENT_CONFIRMED', 'Payment', payment.id, { method: payment.method, receivedAmount: payment.receivedAmount.toString(), receivedCurrency: payment.receivedCurrency });
+}@Injectable()
 export class OrdersService {
   constructor(private readonly prisma: PrismaService) {}
   create(input: unknown, key: string | undefined, actorId: string) {
@@ -286,74 +165,45 @@ export class OrdersService {
       400,
     );
   }
-} else if (
-  data.serviceMode ===
-  'DELIVERY'
-) {
-  throw new DomainError(
-    'CLIENT_REQUIRED',
-    'Une livraison exige l’identification du client.',
-    400,
-  );
 }
-const products =
-  await tx.product.findMany({
-    where: {
-      id: {
-        in: data.items.map(
-          (i) => i.productId,
-        ),
-      },
-      active: true,
-    },
-
-    include: {
-      category: true,
-
-      prices: {
-        where: {
-          categoryCode:
-            data.categoryCode,
-        },
-
-        include: {
-          versions: {
-            where: {
-              currency:
-                data.currency,
-
-              status:
-                'ACTIVE',
-
-              effectiveFrom: {
-                lte:
-                  new Date(),
-              },
-            },
-
-            orderBy: {
-              effectiveFrom:
-                'desc',
-            },
-          },
-        },
-      },
-    },
-  });
-      const lines = data.items.map(item => {
+const products = await tx.product.findMany({
+  where: { id: { in: data.items.map(item => item.productId) }, active: true },
+  include: {
+    category: true,
+    optionGroups: { where: { active: true }, orderBy: { position: 'asc' }, include: { options: { where: { active: true }, orderBy: { position: 'asc' }, include: { linkedProduct: { include: { stockItem: true, prices: { where: { categoryCode: data.categoryCode }, include: { versions: { where: { currency: data.currency, status: 'ACTIVE', effectiveFrom: { lte: new Date() }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: new Date() } }] }, orderBy: { effectiveFrom: 'desc' }, take: 1 } } } } } } } } },
+    prices: { where: { categoryCode: data.categoryCode }, include: { versions: { where: { currency: data.currency, status: 'ACTIVE', effectiveFrom: { lte: new Date() } }, orderBy: { effectiveFrom: 'desc' } } } },
+  },
+});  const lines = data.items.map(item => {
         const p = products.find(p => p.id === item.productId);
         const price = p?.prices.flatMap(p => p.versions).find(v => !v.effectiveTo || v.effectiveTo > new Date());
         if (!p || !p.available) throw new DomainError('PRICE_UNAVAILABLE', 'Article indisponible.', 400);
+        const selections = item.selections ?? {};
+        const extras: { id: string; name: string; quantity: number; unitPrice: string; linkedStock?: { stockMode: string; stockItemId: string | null; stockQuantity: string } }[] = [];
+        for (const group of p.optionGroups) {
+          const selected = selections[group.id] ?? [];
+          if (selected.length < Math.max(group.minSelections, group.required ? 1 : 0) || selected.length > group.maxSelections) throw new DomainError('PRODUCT_OPTIONS_INVALID', `Options invalides pour ${group.name}.`, 400);
+          if (selected.some(id => !group.options.some(option => option.id === id))) throw new DomainError('PRODUCT_OPTION_UNKNOWN', 'Une option sélectionnée est inconnue.', 400);
+          for (const option of group.options.filter(option => selected.includes(option.id))) {
+            const linked = option.linkedProduct;
+            const linkedPrice = linked?.prices[0]?.versions[0];
+            if (linked && (!linked.active || !linked.available || (linked.stockMode === 'DIRECT' && (!linked.stockItem?.active || linked.stockItem.quantity.lt(linked.stockQuantity))))) throw new DomainError('PRODUCT_OPTION_OUT_OF_STOCK', `${linked.name} est indisponible.`, 409);
+            extras.push({ id: option.id, name: option.name, quantity: 1, unitPrice: (linkedPrice?.amount ?? option.priceDelta).toString(), linkedStock: linked ? { stockMode: linked.stockMode, stockItemId: linked.stockItemId, stockQuantity: linked.stockQuantity.toString() } : undefined });
+          }
+        }
+        if (Object.keys(selections).some(groupId => !p.optionGroups.some(group => group.id === groupId))) throw new DomainError('PRODUCT_OPTION_UNKNOWN', 'Un groupe d’options est inconnu.', 400);
+        const baseAmount = menuVersion ? new Decimal((menuVersion.items.find(row => row.productId === p.id)?.priceSnapshot as { categories?: Record<string, { amount: string; currency: string }> } | null)?.categories?.[data.categoryCode]?.amount ?? '0') : new Decimal(price!.amount);
+        const extraAmount = extras.reduce((sum, option) => sum.add(option.unitPrice), new Decimal(0));
+        const lineAmount = baseAmount.add(extraAmount);
         if (menuVersion) {
           const menuItem = menuVersion.items.find(row => row.productId === p.id);
           if (!menuItem?.available || item.quantity > menuItem.quantityAvailable - menuItem.quantitySold - menuItem.quantityReserved) throw new DomainError('MENU_ITEM_UNAVAILABLE', 'Article épuisé ou absent de cette version du menu.');
           const snapshot = z.object({categories:z.record(z.object({amount:z.string(),currency:z.string(),priceVersionId:z.string()}))}).parse(menuItem.priceSnapshot);
           const fixed = snapshot.categories[data.categoryCode];
           if (!fixed || fixed.currency !== data.currency) throw new DomainError('PRICE_UNAVAILABLE', 'Tarif du menu indisponible pour cette catégorie et cette devise.');
-          return {productId:p.id,quantity:new Decimal(item.quantity),unitPrice:new Decimal(fixed.amount),lineTotal:new Decimal(fixed.amount).mul(item.quantity),productSnapshot:{name:p.name,stockMode:p.stockMode,stockItemId:p.stockItemId,stockQuantity:p.stockQuantity.toString(),menuVersionId:menuVersion.id,product:menuItem.productSnapshot,variants:menuItem.variants,priceVersionId:fixed.priceVersionId,clientCategoryCode:data.categoryCode}};
+          return {productId:p.id,quantity:new Decimal(item.quantity),unitPrice:lineAmount,lineTotal:lineAmount.mul(item.quantity),supplementsSnapshot:extras.length?extras:undefined,productSnapshot:{name:p.name,stockMode:p.stockMode,stockItemId:p.stockItemId,stockQuantity:p.stockQuantity.toString(),menuVersionId:menuVersion.id,product:menuItem.productSnapshot,variants:menuItem.variants,priceVersionId:fixed.priceVersionId,clientCategoryCode:data.categoryCode}};
         }
         if (!price) throw new DomainError('PRICE_UNAVAILABLE', 'Tarif indisponible.', 400);
-        return { productId: p.id, quantity: new Decimal(item.quantity), unitPrice: price.amount, lineTotal: price.amount.mul(item.quantity), productSnapshot: {
+        return { productId: p.id, quantity: new Decimal(item.quantity), unitPrice: lineAmount, lineTotal: lineAmount.mul(item.quantity), supplementsSnapshot: extras.length?extras:undefined, productSnapshot: {
   name: p.name,
   stockMode:p.stockMode,stockItemId:p.stockItemId,stockQuantity:p.stockQuantity.toString(),
 
@@ -385,7 +235,7 @@ const products =
         }
       }
       if (total.lte(0)) throw new DomainError('INVALID_AMOUNT', 'Le total doit être positif.', 400);
-      const order = await tx.order.create({ data: { number: `CMD-${localDate().slice(0,4)}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`, clientId: data.clientId, menuVersionId:data.menuVersionId, serviceMode: data.serviceMode, businessDate: new Date(localDate()), totalAmount: total, currency: data.currency, items: { create: lines }, statusHistory: { create: { toStatus: 'RECEIVED', actorId } } } });
+      const order = await tx.order.create({ data: { number: `POS-${localDate().slice(0,4)}-${randomUUID().slice(0, 8).toUpperCase()}`, clientId: data.clientId ?? null, menuVersionId:data.menuVersionId, sourceChannel: 'POS', createdById: actorId, serviceMode: data.serviceMode, businessDate: new Date(localDate()), totalAmount: total, commercialTotal: total, coveredAmount: new Decimal(0), currency: data.currency, items: { create: lines }, statusHistory: { create: { toStatus: 'RECEIVED', actorId } } } });
       await audit(tx, actorId, 'ORDER_CREATED', 'Order', order.id, { total: total.toString(), number: order.number });
       return order;
     });
@@ -436,8 +286,7 @@ const products =
 
       if (
         !order ||
-        !order.paymentRequired ||
-        order.status !== 'RECEIVED'
+        (order.sourceChannel === 'WHATSAPP' ? order.status !== 'READY' : (!order.paymentRequired || order.status !== 'RECEIVED'))
       ) {
         throw new DomainError(
           'ORDER_NOT_PAYABLE',
@@ -481,7 +330,7 @@ const products =
 
       // Reste à payer.
       const remaining =
-        order.totalAmount.sub(
+        (order.sourceChannel === 'WHATSAPP' ? order.totalAmount.sub(order.coveredAmount) : order.totalAmount).sub(
           alreadyPaid,
         );
 
@@ -714,6 +563,15 @@ const products =
                 : undefined,
           },
         });
+      if (payment.status === 'CONFIRMED') {
+        const isFinal = remaining.sub(appliedAmount).lte(0);
+        if (order.sourceChannel === 'WHATSAPP' && isFinal) {
+          await tx.order.update({ where: { id: order.id }, data: { paymentRequired: false } });
+        }
+        if (order.sourceChannel === 'WHATSAPP' && isFinal) {
+          await audit(tx, actorId, 'WHATSAPP_EXTRAS_PAID', 'Order', order.id, { paymentId: payment.id });
+        }
+      }
 
       if (
         payment.status ===
@@ -750,10 +608,7 @@ const products =
             ? remainingAfter.toString()
             : '0',
 
-        orderStatus:
-          remainingAfter.lte(0)
-            ? 'CONFIRMED'
-            : 'RECEIVED',
+        orderStatus: order.sourceChannel === 'WHATSAPP' ? 'READY' : remainingAfter.lte(0) ? 'READY' : 'RECEIVED',
       };
     },
   );
@@ -779,6 +634,13 @@ const products =
   `;
 }
       await tx.payment.update({ where: { id }, data: { status: 'CONFIRMED', confirmedAt: new Date(), confirmedById: actorId } });
+      if (p.orderId) {
+        const paidOrder = await tx.order.findUnique({ where: { id: p.orderId }, select: { id: true, sourceChannel: true, totalAmount: true, coveredAmount: true } });
+        if (paidOrder?.sourceChannel === 'WHATSAPP') {
+          const payments = await tx.payment.aggregate({ where: { orderId: p.orderId, status: 'CONFIRMED' }, _sum: { amountDue: true } });
+          if ((payments._sum.amountDue ?? new Decimal(0)).gte(paidOrder.totalAmount.sub(paidOrder.coveredAmount))) await tx.order.update({ where: { id: p.orderId }, data: { paymentRequired: false } });
+        }
+      }
       if (p.method === 'CARD') await audit(tx, actorId, 'TPE_PAYMENT_APPROVED', 'Payment', id, { paymentId: id, orderId: p.orderId, amount: p.amountDue.toString(), currency: p.referenceCurrency, externalReference: p.externalReference });
       await finishPayment(tx, id, actorId);
       return tx.payment.findUniqueOrThrow({ where: { id } });
@@ -843,18 +705,13 @@ const products =
         };
       }
 
-      if (
-        [
-          'PREPARING',
-          'READY',
-          'SERVED',
-          'OUT_FOR_DELIVERY',
-          'DELIVERED',
-        ].includes(order.status)
-      ) {
+      if (order.sourceChannel === 'WHATSAPP' && order.status === 'SERVED') {
+        throw new DomainError('ORDER_ALREADY_SERVED','Une commande retirée ne peut pas être annulée.',409);
+      }
+      if (order.sourceChannel !== 'WHATSAPP' && ['READY', 'SERVED'].includes(order.status)) {
         throw new DomainError(
           'ORDER_CANCEL_REVIEW_REQUIRED',
-          'Cette commande est déjà avancée dans la préparation ou la livraison.',
+          'Cette commande est déjà prête ou remise.',
           409,
         );
       }
@@ -867,7 +724,7 @@ const products =
         );
 
       // An unpaid cancellation releases menu quantities reserved at creation.
-      if (!hasConfirmedPayment && order.menuVersionId) {
+      if (order.sourceChannel === 'WHATSAPP' && order.menuVersionId) {
         for (const line of order.items) {
           const snapshot = line.productSnapshot as { menuVersionId?: string };
           if (snapshot.menuVersionId !== order.menuVersionId || !line.productId) continue;
@@ -906,6 +763,9 @@ const products =
         await tx.$queryRaw`SELECT id FROM "MealRight" WHERE id = ${reservation.mealRightId}::uuid FOR UPDATE`;
         await tx.mealRight.updateMany({where:{id:reservation.mealRightId,status:'RESERVED'},data:{status:'AVAILABLE',reservedAt:null}});
         await tx.mealReservation.delete({where:{id:reservation.id}});
+      }
+      if (order.sourceChannel === 'WHATSAPP' && order.payments.some(p=>p.status==='CONFIRMED')) {
+        await audit(tx,actorId,'WHATSAPP_ORDER_REFUND_REVIEW_REQUIRED','Order',id,{reason:body.reason,confirmedPayments:order.payments.filter(p=>p.status==='CONFIRMED').map(p=>p.id)});
       }
 
       await audit(
@@ -1222,15 +1082,7 @@ const refundable =
   uuid.parse(id);
 
   const { status } = z
-    .object({
-      status: z.enum([
-        'PREPARING',
-        'READY',
-        'SERVED',
-        'OUT_FOR_DELIVERY',
-        'DELIVERED',
-      ]),
-    })
+    .object({ status: z.enum(['READY', 'SERVED']) })
     .strict()
     .parse(input);
 
@@ -1259,11 +1111,7 @@ const refundable =
         );
       }
 
-      if (
-        ['SERVED', 'DELIVERED'].includes(
-          order.status,
-        )
-      ) {
+      if (order.status === 'SERVED') {
         throw new DomainError(
           'ORDER_ALREADY_SERVED',
           'Cette commande a déjà été remise.',
@@ -1272,24 +1120,9 @@ const refundable =
       }
 
       const allowed =
-        (status === 'PREPARING' &&
-          order.status === 'CONFIRMED') ||
-
         (status === 'READY' &&
-          order.status === 'PREPARING') ||
-
-        (status === 'SERVED' &&
-          order.status === 'READY' &&
-          order.serviceMode !== 'DELIVERY') ||
-
-        (status === 'OUT_FOR_DELIVERY' &&
-          order.status === 'READY' &&
-          order.serviceMode === 'DELIVERY') ||
-
-        (status === 'DELIVERED' &&
-          order.status ===
-            'OUT_FOR_DELIVERY' &&
-          order.serviceMode === 'DELIVERY');
+          ['RECEIVED', 'CONFIRMED'].includes(order.status)) ||
+        (status === 'SERVED' && order.status === 'READY');
 
       if (!allowed) {
         throw new DomainError(
@@ -1298,17 +1131,7 @@ const refundable =
           409,
         );
       }
-      if(status === 'OUT_FOR_DELIVERY') {
-        const assigned = await tx.delivery.findUnique({where:{orderId:id}});
-        if (!assigned || assigned.courierId !== actorId) throw new DomainError('FORBIDDEN','Cette livraison doit être affectée à ce livreur avant son départ.',403);
-        await tx.delivery.update({where:{id:assigned.id},data:{status:'OUT_FOR_DELIVERY'}});
-      }
-      if(status === 'DELIVERED') {
-        const delivery = await tx.delivery.findUnique({where:{orderId:id}});
-        if(!delivery || delivery.courierId !== actorId) throw new DomainError('FORBIDDEN','Cette livraison est affectée à un autre livreur.',403);
-        await tx.delivery.update({where:{orderId:id},data:{status:'DELIVERED',deliveredAt:new Date()}});
-      }
-      if(status === 'DELIVERED' || status === 'SERVED') {
+      if(status === 'SERVED') {
         const reservation = await tx.mealReservation.findUnique({where:{orderId:id}});
         if(reservation) {
           await consumeReservedMealRight(tx,{mealRightId:reservation.mealRightId,orderId:id,actorId,idempotencyKey:key!});
@@ -1316,7 +1139,7 @@ const refundable =
       }
 
       // Subscription-covered orders are sold at physical handover.
-      if (!order.paymentRequired && order.menuVersionId && (status === 'DELIVERED' || status === 'SERVED')) {
+      if (!order.paymentRequired && order.menuVersionId && status === 'SERVED') {
         const lines = await tx.orderItem.findMany({ where: { orderId: id } });
         const totals = new Map<string, number>();
         for (const line of lines) {
@@ -1386,13 +1209,45 @@ const refundable =
 export class OrdersController {
   constructor(private readonly orders: OrdersService, private readonly prisma: PrismaService, private readonly terminal: PaymentTerminalService) {}
   @Require('orders.create') @Post() create(@Body() body: unknown, @Headers('idempotency-key') key: string | undefined, @Req() req: AuthRequest) { return this.orders.create(body, key, req.actor.id).then(data => ({ success: true, data })); }
-  @Require('sales.create') @Get('client-to-collect') async clientOrdersToCollect(@Query() query: unknown) {
+  @Require('orders.manage') @Get('whatsapp') async whatsapp(@Query() query: unknown) {
+    const {q='',date:day}=z.object({q:z.string().trim().max(120).optional(),date:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()}).parse(query);
+    const where={sourceChannel:'WHATSAPP' as const,...(day?{businessDate:new Date(`${day}T00:00:00.000Z`)}:{}),...(q?{OR:[{number:{contains:q,mode:'insensitive' as const}},{client:{is:{firstName:{contains:q,mode:'insensitive' as const}}}},{client:{is:{lastName:{contains:q,mode:'insensitive' as const}}}},{client:{is:{ulcNumber:{contains:q,mode:'insensitive' as const}}}},{client:{is:{phone:{contains:q,mode:'insensitive' as const}}}}]}:{})};
+    const [orders,total]=await Promise.all([this.prisma.order.findMany({where,take:100,orderBy:[{businessDate:'desc'},{createdAt:'desc'}],include:{client:{select:{id:true,firstName:true,lastName:true,ulcNumber:true,phone:true}},items:true,payments:{select:{status:true,amountDue:true}},reservation:{include:{mealRight:true}}}}),this.prisma.order.count({where})]);
+    const data=orders.map(order=>{const paid=order.payments.filter(p=>p.status==='CONFIRMED').reduce((n,p)=>n.add(p.amountDue),new Prisma.Decimal(0));const remaining=order.totalAmount.sub(order.coveredAmount).sub(paid);return {...order,paidAmount:paid.toString(),remainingAmount:remaining.gt(0)?remaining.toString():'0'};});return {success:true,data:{orders:data,total},meta:{total}};
+  }
+  @Require('orders.manage') @Post('whatsapp') async createWhatsApp(@Body() input:unknown,@Headers('idempotency-key') key:string|undefined,@Req() req:AuthRequest){
+    const body=z.object({subscriberId:uuid,businessDate:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),serviceCode:z.enum(['BREAKFAST','LUNCH','DINNER']),menuVersionId:uuid,items:z.array(z.object({productId:uuid,quantity:z.number().int().min(1).max(50),selections:z.record(z.array(uuid)).optional()}).strict()).min(1).max(30),note:z.string().trim().max(500).optional()}).strict().parse(input);
+    return mutate(this.prisma,'whatsapp.orders.create',key,req.actor.id,body,async tx=>{
+      const date=new Date(`${body.businessDate}T00:00:00.000Z`);if(!Number.isFinite(date.getTime())||body.businessDate<localDate())throw new DomainError('INVALID_BUSINESS_DATE','Date de service invalide ou passée.',400);
+      await tx.$queryRaw`SELECT id FROM "MenuVersion" WHERE id=${body.menuVersionId}::uuid FOR UPDATE`;
+      const subscriber=await tx.client.findUnique({where:{id:body.subscriberId},include:{category:true,subscriptions:{where:{startsOn:{lte:date},endsOn:{gte:date},status:{in:['ACTIVE','SCHEDULED']}},include:{planVersion:true,rights:{where:{businessDate:date,serviceCode:{in:[body.serviceCode,'MAIN']},status:'AVAILABLE'},take:1}},orderBy:{startsOn:'desc'}}}});
+      if(!subscriber||subscriber.status!=='ACTIVE')throw new DomainError('SUBSCRIBER_INACTIVE','Abonné introuvable ou archivé.',409);
+      const subscription=subscriber.subscriptions.find(s=>s.balance.lte(0)&&subscriptionLifecycleStatus(s.balance,s.startsOn,s.endsOn,date.toISOString().slice(0,10))==='ACTIVE');if(!subscription)throw new DomainError('SUBSCRIPTION_INVALID','Aucun abonnement actif et payé ne couvre cette date.',409);
+      const snapshot=subscription.serviceSnapshot as {services?:unknown};const services=Array.isArray(snapshot.services)?snapshot.services.filter((x):x is string=>typeof x==='string'):[];if(!services.includes(body.serviceCode)&&!(['LUNCH','DINNER'].includes(body.serviceCode)&&services.includes('MAIN')))throw new DomainError('SERVICE_NOT_COVERED','Service non couvert par la formule.',409);
+      const right=subscription.rights.find(x=>x.serviceCode===body.serviceCode)??subscription.rights.find(x=>x.serviceCode==='MAIN');if(!right)throw new DomainError('MEAL_RIGHT_UNAVAILABLE','Aucun droit disponible pour ce service à cette date.',409);
+      const version=await tx.menuVersion.findUnique({where:{id:body.menuVersionId},include:{menu:true,items:{include:{product:{include:{optionGroups:{where:{active:true},orderBy:{position:'asc'},include:{options:{where:{active:true},orderBy:{position:'asc'},include:{linkedProduct:{include:{stockItem:true,prices:{where:{categoryCode:subscriber.category.code},include:{versions:{where:{currency:subscription.currency,status:'ACTIVE',effectiveFrom:{lte:new Date()}},orderBy:{effectiveFrom:'desc'},take:1}}}}}}}}},prices:{where:{categoryCode:subscriber.category.code},include:{versions:{where:{currency:subscription.currency,status:'ACTIVE',effectiveFrom:{lte:new Date()}},orderBy:{effectiveFrom:'desc'},take:1}}}}}}}}});
+      if(!version||version.status!=='PUBLISHED'||version.menu.serviceCode!==body.serviceCode||version.menu.businessDate.toISOString().slice(0,10)!==body.businessDate)throw new DomainError('PUBLISHED_MENU_REQUIRED','Aucune version publiée ne correspond au service et à la date.',409);
+      const coveredLines: Prisma.Decimal[]=[];
+      const lines=body.items.map(row=>{const item=version.items.find(x=>x.productId===row.productId);if(!item||!item.available||!item.product.active||!item.product.available||item.quantityAvailable-item.quantitySold-item.quantityReserved<row.quantity)throw new DomainError('MENU_ITEM_UNAVAILABLE','Article indisponible ou quantité insuffisante.',409);const snapshot=item.priceSnapshot as {categories?:Record<string,{amount:string;currency:string}>}|null;const price=snapshot?.categories?.[subscriber.category.code];if(!price||price.currency!==subscription.currency)throw new DomainError('PRICE_UNAVAILABLE','Prix publié indisponible pour cet abonné.',409);const base=new Decimal(price.amount);const selected=row.selections??{};const extras:{id:string;name:string;quantity:number;unitPrice:string;linkedStock?:{stockMode:string;stockItemId:string|null;stockQuantity:string}}[]=[];for(const group of item.product.optionGroups){const ids=selected[group.id]??[];if(ids.length<Math.max(group.minSelections,group.required?1:0)||ids.length>group.maxSelections||ids.some(id=>!group.options.some(o=>o.id===id)))throw new DomainError('PRODUCT_OPTIONS_INVALID',`Options invalides pour ${group.name}.`,400);for(const option of group.options.filter(o=>ids.includes(o.id))){const linked=option.linkedProduct,linkedPrice=linked?.prices.flatMap(p=>p.versions)[0];if(linked&&(!linked.active||!linked.available||(linked.stockMode==='DIRECT'&&(!linked.stockItem?.active||linked.stockItem.quantity.lt(linked.stockQuantity)))))throw new DomainError('PRODUCT_OPTION_OUT_OF_STOCK',`${linked.name} est indisponible.`,409);extras.push({id:option.id,name:option.name,quantity:1,unitPrice:(linkedPrice?.amount??option.priceDelta).toString(),linkedStock:linked?{stockMode:linked.stockMode,stockItemId:linked.stockItemId,stockQuantity:linked.stockQuantity.toString()}:undefined});}}if(Object.keys(selected).some(id=>!item.product.optionGroups.some(g=>g.id===id)))throw new DomainError('PRODUCT_OPTION_UNKNOWN','Groupe d’options inconnu.',400);const extra=extras.reduce((n,e)=>n.add(e.unitPrice),new Decimal(0));coveredLines.push(base.mul(row.quantity));return {productId:item.productId,quantity:new Decimal(row.quantity),unitPrice:base.add(extra),lineTotal:base.add(extra).mul(row.quantity),supplementsSnapshot:extras.length?extras:undefined,variantsSnapshot:Object.keys(selected).length?selected:undefined,productSnapshot:{name:(item.productSnapshot as {name?:string}|null)?.name??item.product.name,menuVersionId:version.id,stockMode:item.product.stockMode,stockItemId:item.product.stockItemId,stockQuantity:item.product.stockQuantity.toString()}};});
+      const menuQuantities=new Map<string,number>();for(const row of body.items)menuQuantities.set(row.productId,(menuQuantities.get(row.productId)??0)+row.quantity);for(const [productId,quantity] of menuQuantities){const mi=version.items.find(i=>i.productId===productId)!;const changed=await tx.menuItem.updateMany({where:{menuVersionId:version.id,productId,available:true,quantityReserved:{lte:mi.quantityAvailable-mi.quantitySold-quantity}},data:{quantityReserved:{increment:quantity}}});if(changed.count!==1)throw new DomainError('MENU_ITEM_UNAVAILABLE','Quantité disponible insuffisante.',409);}
+      await tx.$queryRaw`SELECT id FROM "MealRight" WHERE id=${right.id}::uuid FOR UPDATE`;
+      const changed=await tx.mealRight.updateMany({where:{id:right.id,status:'AVAILABLE'},data:{status:'RESERVED',reservedAt:new Date()}});if(changed.count!==1)throw new DomainError('MEAL_RIGHT_UNAVAILABLE','Ce droit vient d’être réservé.',409);
+      const total=lines.reduce((n,l)=>n.add(l.lineTotal),new Decimal(0));const covered=Prisma.Decimal.min(total,coveredLines.reduce((n,x)=>n.add(x),new Decimal(0)));const number=`WA-${body.businessDate.replaceAll('-','')}-${randomUUID().slice(0,8).toUpperCase()}`;
+      const order=await tx.order.create({data:{number,clientId:subscriber.id,menuVersionId:version.id,mealRightId:right.id,serviceMode:'TAKEAWAY',status:'READY',sourceChannel:'WHATSAPP',serviceCode:body.serviceCode,createdById:req.actor.id,businessDate:date,totalAmount:total,commercialTotal:total,coveredAmount:covered,paymentRequired:false,currency:subscription.currency,items:{create:lines},statusHistory:{create:{toStatus:'READY',actorId:req.actor.id,reason:body.note}},reservation:{create:{mealRightId:right.id,reservedById:req.actor.id}}}});
+      await audit(tx,req.actor.id,'WHATSAPP_ORDER_CREATED','Order',order.id,{number,subscriberId:subscriber.id,serviceCode:body.serviceCode,businessDate:body.businessDate,mealRightId:right.id});return order;
+    });
+  }
+  @RequireAny('sales.create','orders.manage') @Get('subscriber-search') async subscriberSearch(@Query('q') raw:string|undefined){const q=(raw??'').trim();if(q.length<2)return {success:true,data:[]};const data=await this.prisma.client.findMany({where:{status:'ACTIVE',OR:[{firstName:{contains:q,mode:'insensitive'}},{lastName:{contains:q,mode:'insensitive'}},{ulcNumber:{contains:q,mode:'insensitive'}},{phone:{contains:q}}]},take:10,orderBy:[{lastName:'asc'},{firstName:'asc'}],select:{id:true,firstName:true,lastName:true,ulcNumber:true,phone:true,category:{select:{code:true,label:true}},subscriptions:{orderBy:{startsOn:'desc'},take:3,select:{id:true,status:true,startsOn:true,endsOn:true,planVersion:{select:{plan:{select:{name:true}}}}}}}});return {success:true,data};}
+  @Require('sales.create') @Post(':id/handover') async handover(@Param('id') id:string,@Body() input:unknown,@Headers('idempotency-key') key:string|undefined,@Req() req:AuthRequest){
+    uuid.parse(id);const {cashSessionId}=z.object({cashSessionId:uuid}).strict().parse(input);
+    const result=await mutate(this.prisma,'orders.handover',key,req.actor.id,{id,cashSessionId},async tx=>{await lockOrder(tx,id);await lockCash(tx,cashSessionId,req.actor.id);const order=await tx.order.findUnique({where:{id},include:{payments:true,reservation:true,items:true,client:{include:{category:true}}}});if(!order||order.sourceChannel!=='WHATSAPP'||order.status!=='READY')throw new DomainError('ORDER_NOT_READY','Commande non disponible au retrait ou déjà remise.',409);if(order.payments.some(p=>p.status==='PENDING'))throw new DomainError('PAYMENT_PENDING','Un paiement de supplément attend confirmation.',409);const paid=order.payments.filter(p=>p.status==='CONFIRMED').reduce((n,p)=>n.add(p.amountDue),new Decimal(0));if(order.totalAmount.sub(order.coveredAmount).sub(paid).gt(0))throw new DomainError('PAYMENT_REQUIRED','Encaissez les extras avant la remise.',409);if(!order.reservation)throw new DomainError('MEAL_RIGHT_UNAVAILABLE','Réservation du droit introuvable.',409);const right=await tx.mealRight.findUniqueOrThrow({where:{id:order.reservation.mealRightId}});if(right.status!=='RESERVED')throw new DomainError('MEAL_RIGHT_UNAVAILABLE','Le droit n’est plus réservé.',409);const sub=await tx.subscription.findUniqueOrThrow({where:{id:right.subscriptionId},include:{planVersion:true}});if(sub.clientId!==order.clientId||sub.balance.gt(0)||sub.status!=='ACTIVE'||sub.startsOn>new Date(`${order.businessDate.toISOString().slice(0,10)}T00:00:00.000Z`)||sub.endsOn<new Date(`${order.businessDate.toISOString().slice(0,10)}T00:00:00.000Z`))throw new DomainError('SUBSCRIPTION_PAYMENT_BLOCKING','L’abonnement ou sa période ne permet pas le retrait.',409);await consumeReservedMealRight(tx,{mealRightId:order.reservation.mealRightId,orderId:id,actorId:req.actor.id,idempotencyKey:key!});const qtys=new Map<string,number>();for(const line of order.items){if(line.productId)qtys.set(line.productId,(qtys.get(line.productId)??0)+Math.ceil(Number(line.quantity)));}for(const [productId,quantity] of qtys){const changed=await tx.menuItem.updateMany({where:{menuVersionId:order.menuVersionId!,productId,quantityReserved:{gte:quantity}},data:{quantityReserved:{decrement:quantity},quantitySold:{increment:quantity}}});if(changed.count!==1)throw new DomainError('MENU_RESERVATION_MISSING','La réservation du menu est absente.',409);}const handedAt=new Date();const stockTotals=new Map<string,Prisma.Decimal>();for(const line of order.items){const productSnapshot=line.productSnapshot as {stockMode?:string;stockItemId?:string;stockQuantity?:string};if(productSnapshot.stockMode==='DIRECT'&&productSnapshot.stockItemId&&productSnapshot.stockQuantity)stockTotals.set(productSnapshot.stockItemId,(stockTotals.get(productSnapshot.stockItemId)??new Decimal(0)).add(line.quantity.mul(productSnapshot.stockQuantity)));const extras=Array.isArray(line.supplementsSnapshot)?line.supplementsSnapshot as {quantity?:number;linkedStock?:{stockMode?:string;stockItemId?:string|null;stockQuantity?:string}}[]:[];for(const extra of extras){const linked=extra.linkedStock;if(linked?.stockMode==='DIRECT'&&linked.stockItemId&&linked.stockQuantity)stockTotals.set(linked.stockItemId,(stockTotals.get(linked.stockItemId)??new Decimal(0)).add(line.quantity.mul(extra.quantity??1).mul(linked.stockQuantity)));}}for(const [stockId,quantity] of [...stockTotals].sort(([a],[b])=>a.localeCompare(b)))await move(tx,stockId,quantity.negated(),'DIRECT_SALE',id,`Retrait abonné : ${order.number}`,req.actor.id);await tx.order.update({where:{id},data:{status:'SERVED',cashierId:req.actor.id,handoverAt:handedAt,mealConsumption:{create:{mealRightId:right.id,servedById:req.actor.id,idempotencyKey:key!,consumedAt:handedAt}},statusHistory:{create:{fromStatus:'READY',toStatus:'SERVED',actorId:req.actor.id}}}});await audit(tx,req.actor.id,'ORDER_HANDED_OVER','Order',id,{cashierId:req.actor.id,handoverAt:handedAt.toISOString(),amountDue:'0'});return {id,number:order.number,status:'SERVED',receiptUrl:`/orders/${id}/receipt`};});return {success:true,data:result};
+  }
+  @Require('sales.create') @Get('ready-for-pickup') async clientOrdersToCollect(@Query() query: unknown) {
     const { q = '' } = z.object({ q: z.string().trim().max(120).optional() }).parse(query);
     const where = {
-      number: { startsWith: 'WEB-' },
+      sourceChannel: 'WHATSAPP' as const,
       clientId: { not: null },
-      status: 'RECEIVED' as const,
-      paymentRequired: true,
+      status: 'READY' as const,
       ...(q ? { OR: [
         { number: { contains: q, mode: 'insensitive' as const } },
         { client: { is: { firstName: { contains: q, mode: 'insensitive' as const } } } },
@@ -1404,15 +1259,19 @@ export class OrdersController {
     const [orders,total] = await Promise.all([this.prisma.order.findMany({ where, take: 100, orderBy: { createdAt: 'asc' }, include: {
       client: { select: { firstName: true, lastName: true, ulcNumber: true, phone: true, category: { select: { code: true, label: true } } } },
       items: { select: { id: true, quantity: true, lineTotal: true, productSnapshot: true, variantsSnapshot: true, supplementsSnapshot: true } },
-      delivery: { select: { addressSnapshot: true, status: true } },
       payments: { select: { id: true, status: true, method: true, amountDue: true } },
     } }),this.prisma.order.count({where})]);
     const data = orders.map(order => {
       const paid = order.payments.filter(payment => payment.status === 'CONFIRMED').reduce((sum, payment) => sum.add(payment.amountDue), new Prisma.Decimal(0));
       const pending = order.payments.find(payment => payment.status === 'PENDING') ?? null;
-      return { ...order, paidAmount: paid.toString(), remainingAmount: order.totalAmount.sub(paid).toString(), pendingPayment: pending };
+      const remaining=order.totalAmount.sub(order.coveredAmount).sub(paid);
+      return { ...order, paidAmount: paid.toString(), remainingAmount: remaining.gt(0)?remaining.toString():'0', pendingPayment: pending };
     });
     return { success: true, data: { orders: data, total } };
+  }
+  @RequireAny('sales.read','reports.read','orders.manage') @Get('supervision') async supervision() {
+    const data=await this.prisma.order.findMany({where:{status:{not:'CANCELLED'}},take:200,orderBy:[{createdAt:'desc'}],select:{id:true,number:true,sourceChannel:true,status:true,businessDate:true,createdAt:true,totalAmount:true,coveredAmount:true,currency:true,cashierId:true,handoverAt:true,serviceCode:true,client:{select:{firstName:true,lastName:true}},items:{select:{productSnapshot:true,quantity:true}},payments:{where:{status:{in:['CONFIRMED','PENDING']}},select:{method:true,amountDue:true,status:true,cashSessionId:true,confirmedAt:true}}}});
+    return {success:true,data};
   }
   @Require('cash.refund')
 @Post('payments/:id/refund')
@@ -1466,8 +1325,8 @@ cancel(
     if (this.terminal.mode === 'MANUAL' && !body.externalReference) throw new DomainError('TERMINAL_REFERENCE_REQUIRED', 'Saisissez uniquement la référence non sensible fournie par le TPE.', 400);
     if (this.terminal.mode !== 'MANUAL' && body.externalReference) throw new DomainError('TERMINAL_REFERENCE_NOT_ALLOWED', 'La référence est fournie par le simulateur ou le terminal configuré.', 400);
     const order = await this.prisma.order.findUnique({ where: { id }, include: { payments: true } });
-    if (!order || order.status !== 'RECEIVED' || !order.paymentRequired) throw new DomainError('ORDER_NOT_PAYABLE', 'Cette commande ne peut plus recevoir de paiement.', 409);
-    const remaining = order.totalAmount.sub(order.payments.filter(p => p.status === 'CONFIRMED').reduce((sum, p) => sum.add(p.amountDue), new Prisma.Decimal(0)));
+    if (!order || !((order.sourceChannel === 'WHATSAPP' && order.status === 'READY') || (order.sourceChannel === 'POS' && order.status === 'RECEIVED' && order.paymentRequired))) throw new DomainError('ORDER_NOT_PAYABLE', 'Cette commande ne peut plus recevoir de paiement.', 409);
+    const remaining = (order.sourceChannel === 'WHATSAPP' ? order.totalAmount.sub(order.coveredAmount) : order.totalAmount).sub(order.payments.filter(p => p.status === 'CONFIRMED').reduce((sum, p) => sum.add(p.amountDue), new Prisma.Decimal(0)));
     if (remaining.lte(0)) throw new DomainError('ORDER_ALREADY_PAID', 'Cette commande est déjà réglée.', 409);
     const reference = this.terminal.mode === 'MOCK' ? `MOCK-${createHash('sha256').update(`${id}:${key}`).digest('hex').slice(0, 32)}` : body.externalReference;
     const payment = await this.orders.pay(id, { cashSessionId: body.cashSessionId, method: 'CARD', receivedAmount: remaining.toString(), receivedCurrency: order.currency, externalReference: reference }, key, req.actor.id) as { id: string; orderId: string | null; amountDue: { toString(): string }; referenceCurrency: 'CDF' | 'USD'; status: string; [key: string]: unknown };
@@ -1528,182 +1387,9 @@ cancel(
     const { page, limit, q } = pageSchema.parse(query); const where = q ? { number: { contains: q, mode: 'insensitive' as const } } : {};
     return { success: true, data: await this.prisma.order.findMany({ where, take: limit, skip: (page-1)*limit, orderBy: { createdAt: 'desc' }, include: { items: true, payments: true } }), meta: { page, limit, total: await this.prisma.order.count({ where }) } };
   }
-  @Require('sales.read') @Get(':id/receipt') async receipt(@Param('id') id: string) {
+  @RequireAny('sales.read','sales.create') @Get(':id/receipt') async receipt(@Param('id') id: string) {
     uuid.parse(id); const order = await this.prisma.order.findUnique({ where: { id }, include: { items: true, payments: { where: { status: 'CONFIRMED' } } } });
-    if (!order || !order.payments.length) throw new DomainError('PAYMENT_NOT_CONFIRMED', 'Le reçu sera disponible après confirmation du paiement.');
+    if (!order || (!order.payments.length && !(order.status === 'SERVED' && order.handoverAt))) throw new DomainError('PAYMENT_NOT_CONFIRMED', 'Le reçu sera disponible après remise ou confirmation du paiement.');
     return { success: true, data: order };
-  }
-}
-@Controller('kitchen')
-export class KitchenController {
-  constructor(private readonly orders: OrdersService, private readonly prisma: PrismaService) {}
-  @Require('kitchen.read') @Get() async list() { return { success: true, data: await this.prisma.order.findMany({ where: { status: { in: ['CONFIRMED','PREPARING','READY'] } }, take: 100, orderBy: { createdAt: 'asc' }, select: { id: true, number: true, status: true, serviceMode: true, createdAt: true, kitchenTicket: { include: { items: true } } } }) }; }
-  @Require('kitchen.read') @Post(':id/status') transition(@Param('id') id: string, @Body() body: unknown, @Headers('idempotency-key') key: string | undefined, @Req() req: AuthRequest) {
-    const target = z.object({ status: z.enum(['PREPARING','READY','SERVED']) }).parse(body).status;
-    const permission = { PREPARING: 'kitchen.prepare', READY: 'kitchen.ready', SERVED: 'kitchen.serve' }[target];
-    if (!req.actor.permissions.includes(permission)) throw new DomainError('FORBIDDEN', 'Permission insuffisante.', 403);
-    return this.orders.transition(id, body, key, req.actor.id).then(data => ({ success: true, data }));
-  }
-}
-@Controller('delivery')
-export class DeliveryController {
-  constructor(
-    private readonly orders:
-      OrdersService,
-
-    private readonly prisma:
-      PrismaService,
-  ) {}
-
-  @Require('delivery.assign')
-  @Get('dispatch')
-  async dispatch() {
-    const [orders, users, setting] = await Promise.all([
-      this.prisma.order.findMany({where:{serviceMode:'DELIVERY',status:'READY',OR:[{delivery:{is:null}},{delivery:{is:{courierId:null}}}]},take:100,orderBy:{createdAt:'asc'},select:{id:true,number:true,createdAt:true,client:{select:{firstName:true,lastName:true}},delivery:{select:{addressSnapshot:true}},kitchenTicket:{include:{items:true}}}}),
-      this.prisma.user.findMany({where:{status:'ACTIVE',roles:{some:{role:{code:'LIVREUR'}}},courierProfile:{is:{availability:'AVAILABLE'}}},select:{id:true,firstName:true,lastName:true,courierProfile:{select:{availability:true}}},orderBy:[{firstName:'asc'},{lastName:'asc'},{id:'asc'}]}),
-      this.prisma.setting.findUnique({where:{key:'livraison'}}),
-    ]);
-    const config=setting?.value as {maxConcurrentDeliveries?:unknown}|undefined;
-    const max=setting?.validated&&typeof config?.maxConcurrentDeliveries==='number'&&Number.isInteger(config.maxConcurrentDeliveries)&&config.maxConcurrentDeliveries>0?config.maxConcurrentDeliveries:1;
-    const candidates=[];
-    for(const user of users){const activeMissions=await this.prisma.delivery.count({where:{courierId:user.id,status:{in:['READY','OUT_FOR_DELIVERY']}}});if(courierCanAccept(user.courierProfile!.availability,activeMissions,max))candidates.push({...user,courierProfile:undefined,activeMissions,capacity:max});}
-    return {success:true,data:{orders,couriers:rankCouriers(candidates)}};
-  }
-
-  @Require('delivery.read')
-  @Get('availability')
-  async availability(@Req() req:AuthRequest) {
-    const courier=await this.prisma.user.findFirst({where:{id:req.actor.id,status:'ACTIVE',roles:{some:{role:{code:'LIVREUR'}}}},select:{id:true,courierProfile:{select:{availability:true}}}});
-    if(!courier)return {success:true,data:{isCourier:false,availability:'UNAVAILABLE',manualAvailability:'UNAVAILABLE',activeMissions:0,capacity:1}};
-    const [activeMissions,setting]=await Promise.all([this.prisma.delivery.count({where:{courierId:req.actor.id,status:{in:['READY','OUT_FOR_DELIVERY']}}}),this.prisma.setting.findUnique({where:{key:'livraison'}})]);
-    const config=setting?.value as {maxConcurrentDeliveries?:unknown}|undefined;const capacity=setting?.validated&&typeof config?.maxConcurrentDeliveries==='number'&&Number.isInteger(config.maxConcurrentDeliveries)&&config.maxConcurrentDeliveries>0?config.maxConcurrentDeliveries:1;
-    const manualAvailability=courier.courierProfile?.availability??'UNAVAILABLE';const availability=effectiveCourierAvailability(manualAvailability,activeMissions,capacity);
-    return {success:true,data:{isCourier:true,availability,manualAvailability,activeMissions,capacity}};
-  }
-
-  @Require('delivery.read')
-  @Post('availability')
-  async setAvailability(@Body() input:unknown,@Req() req:AuthRequest) {
-    const availability=z.enum(['AVAILABLE','UNAVAILABLE']).parse((input as {availability?:unknown})?.availability);
-    const courier=await this.prisma.user.findFirst({where:{id:req.actor.id,status:'ACTIVE',roles:{some:{role:{code:'LIVREUR'}}}},select:{id:true}});
-    if(!courier)throw new DomainError('COURIER_ROLE_REQUIRED','Cette action est réservée aux livreurs actifs.',403);
-    const profile=await this.prisma.$transaction(async tx=>{await tx.$queryRaw`SELECT id FROM "User" WHERE id=${req.actor.id}::uuid FOR UPDATE`;const row=await tx.courierProfile.upsert({where:{userId:req.actor.id},create:{userId:req.actor.id,availability},update:{availability}});await audit(tx,req.actor.id,'COURIER_AVAILABILITY_CHANGED','CourierProfile',req.actor.id,{availability});return row;});
-    return {success:true,data:profile};
-  }
-
-  @Require('delivery.assign')
-  @Post(':id/assign')
-  assign(@Param('id') id:string,@Body() input:unknown,@Headers('idempotency-key') key:string|undefined,@Req() req:AuthRequest) {
-    uuid.parse(id);
-    const {courierId}=z.object({courierId:uuid}).strict().parse(input);
-    return mutate(this.prisma,'delivery.assign',key,req.actor.id,{id,courierId},async tx=>{
-      await lockOrder(tx,id);
-      const order=await tx.order.findFirst({where:{id,serviceMode:'DELIVERY',status:'READY',OR:[{delivery:{is:null}},{delivery:{is:{courierId:null}}}]},include:{client:true,delivery:true}});
-      if(!order)throw new DomainError('DELIVERY_NOT_ASSIGNABLE','Cette commande n’est plus disponible pour affectation.',409);
-      await tx.$queryRaw`SELECT id FROM "User" WHERE id=${courierId}::uuid FOR UPDATE`;
-      const courier=await tx.user.findFirst({where:{id:courierId,status:'ACTIVE',roles:{some:{role:{code:'LIVREUR'}}},courierProfile:{is:{availability:'AVAILABLE'}}},select:{id:true}});
-      if(!courier)throw new DomainError('COURIER_NOT_AVAILABLE','Ce livreur n’est plus disponible.',409);
-      const setting=await tx.setting.findUnique({where:{key:'livraison'}});const config=setting?.value as {maxConcurrentDeliveries?:unknown}|undefined;
-      const capacity=setting?.validated&&typeof config?.maxConcurrentDeliveries==='number'&&Number.isInteger(config.maxConcurrentDeliveries)&&config.maxConcurrentDeliveries>0?config.maxConcurrentDeliveries:1;
-      const active=await tx.delivery.count({where:{courierId,status:{in:['READY','OUT_FOR_DELIVERY']}}});
-      if(!courierCanAccept('AVAILABLE',active,capacity))throw new DomainError('COURIER_NOT_AVAILABLE','Ce livreur n’est plus disponible.',409);
-      const delivery=order.delivery?await tx.delivery.update({where:{id:order.delivery.id},data:{courierId,status:'READY',assignedAt:new Date()}}):await tx.delivery.create({data:{orderId:id,courierId,status:'READY',assignedAt:new Date(),addressSnapshot:{recipientName:order.client?.firstName+' '+order.client?.lastName,contactPhone:order.client?.phone??'',dropoffPoint:order.client?.residency??''}}});
-      await audit(tx,req.actor.id,'DELIVERY_ASSIGNED','Delivery',delivery.id,{orderId:id,courierId});
-      return delivery;
-    }).then(data=>({success:true,data}));
-  }
-
-  @Require('delivery.read')
-  @Get()
-  async list(@Req() req: AuthRequest) {
-    return {
-      success: true,
-
-      data:
-        await this.prisma.order.findMany({
-          where: {
-            serviceMode: 'DELIVERY',
-            delivery:{is:{courierId:req.actor.id}},
-
-            status: {
-              in: [
-                'READY',
-                'OUT_FOR_DELIVERY',
-              ],
-            },
-          },
-
-          take: 100,
-
-          orderBy: {
-            createdAt: 'asc',
-          },
-
-          select: {
-            id: true,
-            number: true,
-            status: true,
-            serviceMode: true,
-            createdAt: true,
-            client: {select:{firstName:true,lastName:true,phone:true,residency:true}},
-            delivery: {select:{status:true,addressSnapshot:true,failureReason:true}},
-            kitchenTicket: {
-              include: {
-                items: true,
-              },
-            },
-          },
-        }),
-    };
-  }
-
-  @Require('delivery.confirm')
-  @Post(':id/status')
-  transition(
-    @Param('id') id: string,
-    @Body() body: unknown,
-    @Headers('idempotency-key')
-    key: string | undefined,
-    @Req() req: AuthRequest,
-  ) {
-    const deliveryInput = z
-      .object({
-        status: z.enum([
-          'OUT_FOR_DELIVERY',
-          'DELIVERED',
-        ]),
-        physicallyHandedOver: z.boolean().optional(),
-      })
-      .strict()
-      .parse(body);
-    const status=deliveryInput.status;
-    if(status==='DELIVERED' && deliveryInput.physicallyHandedOver!==true)throw new DomainError('HANDOVER_REQUIRED','Confirmez la remise physique au destinataire.',400);
-
-    return this.orders
-      .transition(
-        id,
-        { status },
-        key,
-        req.actor.id,
-      )
-      .then((data) => ({
-        success: true,
-        data,
-      }));
-  }
-
-  @Require('delivery.confirm')
-  @Post(':id/failure')
-  reportFailure(@Param('id') id:string,@Body() input:unknown,@Headers('idempotency-key') key:string|undefined,@Req() req:AuthRequest) {
-    uuid.parse(id);
-    const {reason}=z.object({reason:z.string().trim().min(3).max(500)}).strict().parse(input);
-    return mutate(this.prisma,'delivery.failure',key,req.actor.id,{id,reason},async tx=>{
-      await lockOrder(tx,id);
-      const delivery=await tx.delivery.findFirst({where:{orderId:id,courierId:req.actor.id,status:{in:['READY','OUT_FOR_DELIVERY']}},include:{order:true}});
-      if(!delivery||delivery.order.serviceMode!=='DELIVERY'||!['READY','OUT_FOR_DELIVERY'].includes(delivery.order.status))throw new DomainError('DELIVERY_NOT_ACTIVE','Cette livraison n’est plus active.',409);
-      const failed=await tx.delivery.update({where:{id:delivery.id},data:{status:'FAILED',failureReason:reason}});
-      await audit(tx,req.actor.id,'DELIVERY_FAILED','Delivery',delivery.id,{orderId:id,reason});
-      return failed;
-    }).then(data=>({success:true,data}));
   }
 }

@@ -3,7 +3,7 @@ import type { Response } from './transport';
 import { Prisma } from '@jami/database';
 import { money, uuid, currency } from '@jami/validation';
 import { z } from 'zod';
-import { AuthRequest, Require } from './auth';
+import { AuthRequest, Require, RequireAny } from './auth';
 import { PrismaService } from './prisma.service';
 import { audit, lockCash, mutate } from './transaction';
 import { DomainError } from './http';
@@ -12,7 +12,7 @@ import { DomainError } from './http';
 export class CashController {
   constructor(private readonly db: PrismaService) {}
 
-  @Require('cash.read')
+  @RequireAny('cash.read','sales.read','orders.manage','subscriptions.create')
   @Get()
   async current(@Req() req: AuthRequest) {
     return {
@@ -32,7 +32,7 @@ export class CashController {
     };
   }
 
-  @Require('cash.open')
+  @RequireAny('cash.open','subscriptions.create','orders.manage')
   @Get('registers')
   async registers() {
     return {
@@ -43,7 +43,7 @@ export class CashController {
     };
   }
 
-  @Require('cash.open')
+  @RequireAny('cash.open','subscriptions.create','orders.manage')
   @Post('open')
   open(
     @Body() input: unknown,
@@ -397,7 +397,7 @@ export class CashController {
     ).then((data) => ({ success: true, data }));
   }
 
-  @Require('cash.read')
+  @RequireAny('cash.read','sales.read','orders.manage','subscriptions.create')
   @Get('closings')
   async closings() {
     return {

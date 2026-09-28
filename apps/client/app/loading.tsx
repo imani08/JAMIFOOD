@@ -1,1 +1,0 @@
-export default function Loading() { return <main className="loading-page" aria-live="polite"><div className="brand-mark">J<span>F</span></div><p>Un instant, on vous prépare le meilleur…</p><i className="loading-line" /></main>; }

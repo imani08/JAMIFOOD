@@ -11,3 +11,7 @@ uploads
 *.log
 
 .local/
+
+# Local database backups
+backup_before_jamifood_v4.sql
+*.sql.bak

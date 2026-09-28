@@ -4,42 +4,19 @@ const db = new PrismaClient();
 async function main() {
   if (process.env.NODE_ENV === 'production' || process.env.SEED_DEMO !== 'true' || !process.env.DEMO_PASSWORD || process.env.DEMO_PASSWORD.length < 12) throw new Error('Seed réservé à DEMO avec mot de passe externe de 12 caractères minimum.');
   const rolePermissions: Record<string,string[]> = {
-    DIRECTION: ['users.read','users.create','users.update','users.disable','clients.read','clients.create','clients.update','clients.archive','clients.merge','subscriptions.read','subscriptions.create','subscriptions.suspend','subscriptions.cancel','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','cash.refund','cash.adjust','sales.create','sales.read','orders.create','orders.read','orders.cancel','meal.validate','meal.correct','meal.exception','kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','delivery.read','delivery.confirm','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory','menus.read',
-'menus.manage',
-'menus.publish','clients.verify',],
-    RESPONSABLE_RESTAURANT: ['clients.read','clients.create','clients.update','subscriptions.read','subscriptions.create','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','sales.create','sales.read','orders.create','orders.read','meal.validate','kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','delivery.read','delivery.confirm','delivery.assign','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory','menus.read',
-'menus.manage',
-'menus.publish','clients.verify',],
-    CAISSIER: ['clients.read','clients.create','subscriptions.read','subscriptions.create','cash.open','cash.close','cash.read','sales.create','sales.read','orders.create','orders.read','meal.validate','pricing.read'],
-    CUISINE: ['kitchen.read','kitchen.prepare','kitchen.ready','kitchen.serve','menus.read'],
-    GESTIONNAIRE_STOCK: [
-  'stock.read',
-  'stock.adjust',
-  'stock.inventory'
-], LIVREUR: ['delivery.read','delivery.confirm'], ADMIN_TECHNIQUE: ['users.read','users.create','users.update','users.disable'], CLIENT: []
-  };// En environnement de développement, la Direction possède
-// toutes les permissions connues de l'application.
-rolePermissions.DIRECTION = [
-  ...new Set(
-    Object.values(rolePermissions).flat(),
-  ),
-];
-  for (const [role, permissions] of Object.entries(rolePermissions)) {
-    if (role !== 'CLIENT') permissions.push('auth.session', 'auth.password-change');
-  }
-  for (const code of [...new Set(Object.values(rolePermissions).flat())]) await db.permission.upsert({where:{code},update:{},create:{code,label:code}});
-  for (const [code,permissions] of Object.entries(rolePermissions)) {
+    RESPONSABLE_RESTAURANT: ['auth.session','auth.password-change','users.read','users.create','users.update','users.disable','clients.read','clients.create','clients.update','clients.archive','subscriptions.read','subscriptions.create','subscriptions.suspend','subscriptions.cancel','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','cash.refund','cash.adjust','sales.create','sales.read','orders.create','orders.read','orders.manage','orders.cancel','meal.correct','meal.exception','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory','menus.read','menus.write','menus.manage','menus.publish'],
+    GESTIONNAIRE: ['auth.session','auth.password-change','clients.read','clients.create','clients.update','clients.archive','subscriptions.read','subscriptions.create','subscriptions.suspend','subscriptions.cancel','orders.manage','orders.cancel','sales.read','cash.read','stock.read','reports.read','menus.read'],
+    CAISSIER: ['auth.session','auth.password-change','sales.create','sales.read','orders.read','cash.open','cash.close','cash.read','sales.receipt','menus.read'],
+    ADMIN_TECHNIQUE: ['auth.session','auth.password-change','users.read','users.create','users.update','users.disable'],
+  };  for (const [code,permissions] of Object.entries(rolePermissions)) {
     const role=await db.role.upsert({where:{code},update:{},create:{code,label:code}});
     for (const permissionCode of permissions) {const permission=await db.permission.findUniqueOrThrow({where:{code:permissionCode}});await db.rolePermission.upsert({where:{roleId_permissionId:{roleId:role.id,permissionId:permission.id}},update:{},create:{roleId:role.id,permissionId:permission.id}});}
   }
   const salt=randomBytes(16).toString('hex'); const passwordHash='scrypt$'+salt+'$'+scryptSync(process.env.DEMO_PASSWORD,salt,64).toString('hex');
 const demoUsers = [
-  ['direction.demo', 'DIRECTION'],
   ['responsable.demo', 'RESPONSABLE_RESTAURANT'],
+  ['gestionnaire.demo', 'GESTIONNAIRE'],
   ['caissier.demo', 'CAISSIER'],
-  ['cuisine.demo', 'CUISINE'],
-  ['stock.demo', 'GESTIONNAIRE_STOCK'],
-  ['livreur.demo', 'LIVREUR'],
   ['admintech.demo', 'ADMIN_TECHNIQUE'],
 ] as const;
 
@@ -47,13 +24,12 @@ for (const [username, roleCode] of demoUsers) {
     const user=await db.user.upsert({where:{username},update:{},create:{username,firstName:roleCode,lastName:'DEMO',passwordHash}});
     const role=await db.role.findUniqueOrThrow({where:{code:roleCode}});await db.userRole.upsert({where:{userId_roleId:{userId:user.id,roleId:role.id}},update:{},create:{userId:user.id,roleId:role.id}});
   }
-  const admin=await db.user.findUniqueOrThrow({where:{username:'direction.demo'}});
+  const admin=await db.user.findFirstOrThrow({where:{roles:{some:{role:{code:'RESPONSABLE_RESTAURANT'}}}}});
   for(const [code,label] of [['ETUDIANT_HOME','Étudiant résident Home'],['ETUDIANT_EXTERNE','Étudiant externe'],['PERSONNEL_ULC','Personnel ULC']]) await db.clientCategory.upsert({where:{code},update:{},create:{code,label}});
-  for(const [code,name,price,services,serviceQuotas,deliveryIncluded] of [['PREMIUM','Premium intégral','140',['BREAKFAST','LUNCH','DINNER'],{BREAKFAST:1,LUNCH:1,DINNER:1},true],['COMBINEE','Combinée','110',['LUNCH','DINNER'],{LUNCH:1,DINNER:1},false],['REPAS','Repas','60',['MAIN'],{MAIN:1},false],['BREAKFAST','Petit-déjeuner','40',['BREAKFAST'],{BREAKFAST:1},false]] as const) {
+  for(const [code,name,price,services,serviceQuotas] of [['PREMIUM','Premium intégral','140',['BREAKFAST','LUNCH','DINNER'],{BREAKFAST:1,LUNCH:1,DINNER:1}],['COMBINEE','Combinée','110',['LUNCH','DINNER'],{LUNCH:1,DINNER:1}],['REPAS','Repas','60',['MAIN'],{MAIN:1}],['BREAKFAST','Petit-déjeuner','40',['BREAKFAST'],{BREAKFAST:1}]] as const) {
     const plan=await db.subscriptionPlan.upsert({where:{code},update:{},create:{code,name}});
-    await db.subscriptionPlanVersion.upsert({where:{planId_version:{planId:plan.id,version:1}},update:{},create:{planId:plan.id,version:1,price,currency:'USD',services:[...services],eligibilityDays:[1,2,3,4,5,6],quotaRules:{pendingValidation:false,days:30,serviceQuotas,demo:false},deliveryIncluded,effectiveFrom:new Date('2026-01-01'),status:'ACTIVE'}});
+    await db.subscriptionPlanVersion.upsert({where:{planId_version:{planId:plan.id,version:1}},update:{},create:{planId:plan.id,version:1,price,currency:'USD',services:[...services],eligibilityDays:[1,2,3,4,5,6],quotaRules:{pendingValidation:false,days:30,serviceQuotas,demo:false},effectiveFrom:new Date('2026-01-01'),status:'ACTIVE'}});
   }
-  const category=await db.productCategory.upsert({where:{code:'DEMO'},update:{},create:{code:'DEMO',label:'Menu DEMO'}});
     const productCategories = [
     ['REPAS', 'Repas complets'],
     ['PETIT_DEJEUNER', 'Petits-déjeuners'],
@@ -127,6 +103,11 @@ for (const [username, roleCode] of demoUsers) {
     const pp=await db.productPrice.upsert({where:{productId_categoryCode:{productId:product.id,categoryCode:'ETUDIANT_EXTERNE'}},update:{},create:{productId:product.id,categoryCode:'ETUDIANT_EXTERNE'}});
     if(!(await db.priceVersion.findFirst({where:{productPriceId:pp.id,status:'ACTIVE'}}))) await db.priceVersion.create({data:{productPriceId:pp.id,version:((await db.priceVersion.aggregate({where:{productPriceId:pp.id},_max:{version:true}}))._max.version??0)+1,amount:price,currency:'CDF',effectiveFrom:new Date(),status:'ACTIVE',createdById:admin.id}});
   }
+  const obsoleteRoleCodes=['DIRECTION','CLIENT','CUISINE','LIVREUR'];
+  await db.rolePermission.deleteMany({where:{role:{code:{in:obsoleteRoleCodes}}}});
+  await db.userRole.deleteMany({where:{role:{code:{in:obsoleteRoleCodes}}}});
+  await db.role.deleteMany({where:{code:{in:obsoleteRoleCodes}}});
+  await db.permission.deleteMany({where:{OR:[{code:{startsWith:'kitchen.'}},{code:{startsWith:'delivery.'}},{code:'meal.validate'},{code:'clients.verify'}]}});
 
   for (const item of demoProducts) {
     const product = await db.product.upsert({
@@ -212,13 +193,11 @@ for (const [username, roleCode] of demoUsers) {
   for(const [code,label] of [['DENREES','Denrées'],['GAZ','Gaz'],['TRANSPORT','Transport'],['PERSONNEL','Personnel'],['ENTRETIEN','Entretien'],['EMBALLAGES','Emballages'],['EAU','Eau'],['ELECTRICITE','Électricité']]) await db.expenseCategory.upsert({where:{code},update:{},create:{code,label}});
   for(const [key,value] of [
     ['calendrier',{weekdays:[1,2,3,4,5],publicHolidays:'CD_LEGAL',closures:[]}],
-    ['livraison',{enabled:false,zones:[]}],
     ['acompte',{enabled:false}],
     ['report',{enabled:false}],
     ['flex',{enabled:false}],
     ['tpe',{mode:'MANUAL',provider:null,realTerminalConnected:false}],
-  ]) await db.setting.upsert({where:{key:key as string},update:{},create:{key:key as string,value}});
+  ]) await db.setting.upsert({where:{key:key as string},update:key==='calendrier'?{validated:true,validatedById:admin.id,validatedAt:new Date()}:{},create:{key:key as string,value,...(key==='calendrier'?{validated:true,validatedById:admin.id,validatedAt:new Date()}:{})}});
   for(const [code,name,unit] of [['RIZ','Riz','kg'],['HUILE','Huile','litre'],['EAU','Bouteille d’eau','pièce']]) await db.stockItem.upsert({where:{code},update:{},create:{code,name,unit,alertThreshold:'5'}});
 }
 main().finally(()=>db.$disconnect());
-

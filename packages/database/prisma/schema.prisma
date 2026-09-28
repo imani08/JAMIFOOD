@@ -18,30 +18,10 @@ enum ClientStatus {
   ARCHIVED
 }
 
-enum ClientAccountType {
-  STUDENT_HOME
-  STUDENT_EXTERNAL
-  STAFF
-}
-
-enum ClientVerificationStatus {
-  PENDING
-  VERIFIED
-  REJECTED
-  SUSPENDED
-}
-
 enum MenuVersionStatus {
   DRAFT
   PUBLISHED
   RETIRED
-}
-
-enum QRCodeStatus {
-  ACTIVE
-  REVOKED
-  REPLACED
-  EXPIRED
 }
 
 enum SubscriptionStatus {
@@ -63,11 +43,8 @@ enum MealRightStatus {
 enum OrderStatus {
   RECEIVED
   CONFIRMED
-  PREPARING
   READY
   SERVED
-  OUT_FOR_DELIVERY
-  DELIVERED
   CANCELLED
 }
 
@@ -84,6 +61,11 @@ enum Currency {
   CDF
 }
 
+enum OrderSourceChannel {
+  POS
+  WHATSAPP
+}
+
 enum ProductOptionGroupType {
   VARIANT
   SUPPLEMENT
@@ -92,12 +74,6 @@ enum ProductOptionGroupType {
 enum ServiceMode {
   DINE_IN
   TAKEAWAY
-  DELIVERY
-}
-
-enum CourierAvailability {
-  AVAILABLE
-  UNAVAILABLE
 }
 
 enum CashSessionStatus {
@@ -134,16 +110,9 @@ model User {
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
   roles        UserRole[]
-  courierProfile CourierProfile?
   sessions     Session[]
   auditLogs    AuditLog[]
-}
-
-model CourierProfile {
-  userId      String              @id @db.Uuid
-  availability CourierAvailability @default(UNAVAILABLE)
-  updatedAt   DateTime            @updatedAt
-  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cashierOrders Order[]   @relation("OrderCashier")
 }
 
 model Role {
@@ -248,97 +217,16 @@ model Client {
   dietaryNotesEncrypted String?
   status                ClientStatus   @default(ACTIVE)
   mergedIntoId          String?        @db.Uuid
+  archivedAt            DateTime?
   createdAt             DateTime       @default(now())
   updatedAt             DateTime       @updatedAt
   category              ClientCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   subscriptions         Subscription[]
   orders                Order[]
-  qrCodes               QRCode[]
-  account               ClientAccount?
 
   @@index([lastName, firstName])
+  @@index([firstName, lastName])
   @@index([phone])
-}
-
-model ClientAccount {
-  id                 String                    @id @default(uuid()) @db.Uuid
-  clientId           String                    @unique @db.Uuid
-  email              String                    @unique
-  passwordHash       String
-  type               ClientAccountType
-  verificationStatus ClientVerificationStatus  @default(PENDING)
-  emailVerifiedAt    DateTime?
-  verifiedAt         DateTime?
-  verifiedById       String?                   @db.Uuid
-  createdAt          DateTime                  @default(now())
-  updatedAt          DateTime                  @updatedAt
-  client             Client                    @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  sessions           ClientSession[]
-  events             ClientPortalEvent[]
-  authTokens          ClientAuthToken[]
-
-  @@index([verificationStatus, createdAt])
-}
-
-model ClientAuthToken {
-  id        String   @id @default(uuid()) @db.Uuid
-  accountId String   @db.Uuid
-  purpose   String
-  tokenHash String   @unique
-  expiresAt DateTime
-  usedAt    DateTime?
-  createdAt DateTime @default(now())
-  account   ClientAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  @@index([accountId, purpose, createdAt])
-  @@index([expiresAt])
-}
-
-model ClientSession {
-  id             String        @id @default(uuid()) @db.Uuid
-  accountId      String        @db.Uuid
-  tokenHash      String        @unique
-  expiresAt      DateTime
-  lastActivityAt DateTime
-  createdAt      DateTime      @default(now())
-  account        ClientAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
-
-  @@index([accountId, expiresAt])
-}
-
-model ClientPortalEvent {
-  id        String        @id @default(uuid()) @db.Uuid
-  accountId String        @db.Uuid
-  action    String
-  metadata  Json?
-  createdAt DateTime      @default(now())
-  account   ClientAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
-
-  @@index([accountId, createdAt])
-}
-
-model QRCode {
-  id           String          @id @default(uuid()) @db.Uuid
-  clientId     String          @db.Uuid
-  tokenHash    String          @unique
-  status       QRCodeStatus    @default(ACTIVE)
-  issuedAt     DateTime        @default(now())
-  revokedAt    DateTime?
-  replacedById String?         @unique @db.Uuid
-  tokenCiphertext String?
-  client       Client          @relation(fields: [clientId], references: [id], onDelete: Restrict)
-  history      QRCodeHistory[]
-
-  @@index([clientId, status])
-}
-
-model QRCodeHistory {
-  id        String   @id @default(uuid()) @db.Uuid
-  qrCodeId  String   @db.Uuid
-  action    String
-  actorId   String?  @db.Uuid
-  metadata  Json?
-  createdAt DateTime @default(now())
-  qrCode    QRCode   @relation(fields: [qrCodeId], references: [id], onDelete: Restrict)
 }
 
 model SubscriptionPlan {
@@ -359,7 +247,6 @@ model SubscriptionPlanVersion {
   services         Json
   eligibilityDays  Json
   quotaRules       Json
-  deliveryIncluded Boolean          @default(false)
   effectiveFrom    DateTime
   effectiveTo      DateTime?
   status           PriceStatus      @default(SCHEDULED)
@@ -374,6 +261,7 @@ model Subscription {
   payments         Payment[]
   id               String                  @id @default(uuid()) @db.Uuid
   clientId         String                  @db.Uuid
+  client           Client                  @relation(fields: [clientId], references: [id], onDelete: Restrict)
   planVersionId    String                  @db.Uuid
   status           SubscriptionStatus      @default(PENDING_PAYMENT)
   startsOn         DateTime                @db.Date
@@ -383,11 +271,10 @@ model Subscription {
   paidAmount       Decimal                 @default(0) @db.Decimal(18, 2)
   balance          Decimal                 @db.Decimal(18, 2)
   serviceSnapshot  Json
+  legacyDeliveryIncluded Boolean @default(false)
   renewedFromId    String?                 @db.Uuid
-  deliveryIncluded Boolean                 @default(false)
   createdAt        DateTime                @default(now())
   updatedAt        DateTime                @updatedAt
-  client           Client                  @relation(fields: [clientId], references: [id], onDelete: Restrict)
   planVersion      SubscriptionPlanVersion @relation(fields: [planVersionId], references: [id], onDelete: Restrict)
   rights           MealRight[]
   renewedFrom      Subscription?           @relation("SubscriptionRenewal", fields: [renewedFromId], references: [id], onDelete: Restrict)
@@ -433,6 +320,7 @@ model MealRight {
   subscription   Subscription     @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
   consumption    MealConsumption?
   reservation    MealReservation?
+  orders         Order[]
 
   @@unique([subscriptionId, businessDate, serviceCode, quotaGroup])
   @@index([status, businessDate, serviceCode])
@@ -628,18 +516,21 @@ model Order {
   id              String               @id @default(uuid()) @db.Uuid
   number          String               @unique
   clientId        String?              @db.Uuid
-  menuVersionId   String?              @db.Uuid
   serviceMode     ServiceMode
+  legacyDeliveryMode String?
   status          OrderStatus          @default(RECEIVED)
   businessDate    DateTime             @db.Date
   paymentRequired Boolean              @default(true)
-  ticketTokenHash String?              @unique
   totalAmount     Decimal              @db.Decimal(18, 2)
   commercialTotal Decimal              @default(0) @db.Decimal(18, 2)
   coveredAmount   Decimal              @default(0) @db.Decimal(18, 2)
   mealRightId     String?              @unique @db.Uuid
-  clientIdempotencyKey String?          @unique
-  clientRequestHash String?
+  sourceChannel   OrderSourceChannel   @default(POS)
+  serviceCode     String?
+  createdById     String?              @db.Uuid
+  cashierId       String?              @db.Uuid
+  handoverAt      DateTime?
+  menuVersionId   String?              @db.Uuid
   currency        Currency
   createdAt       DateTime             @default(now())
   updatedAt       DateTime             @updatedAt
@@ -647,15 +538,18 @@ model Order {
   items           OrderItem[]
   payments        Payment[]
   statusHistory   OrderStatusHistory[]
-  kitchenTicket   KitchenTicket?
-  delivery        Delivery?
   mealConsumption MealConsumption?
   reservation     MealReservation?
+  mealRight       MealRight?           @relation(fields: [mealRightId], references: [id], onDelete: Restrict)
+  cashier         User?                @relation("OrderCashier", fields: [cashierId], references: [id], onDelete: Restrict)
 
-  menuVersion MenuVersion? @relation(fields: [menuVersionId], references: [id], onDelete: Restrict)
+  menuVersion     MenuVersion?         @relation(fields: [menuVersionId], references: [id], onDelete: Restrict)
 
   @@index([status, createdAt])
   @@index([clientId, createdAt])
+  @@index([clientId, businessDate, status])
+  @@index([sourceChannel, businessDate, status])
+  @@index([cashierId])
 }
 
 model OrderItem {
@@ -685,39 +579,6 @@ model OrderStatusHistory {
   order      Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
 
   @@index([orderId, createdAt])
-}
-
-model KitchenTicket {
-  id               String              @id @default(uuid()) @db.Uuid
-  orderId          String              @unique @db.Uuid
-  number           String              @unique
-  renderedSnapshot Json
-  issuedAt         DateTime            @default(now())
-  order            Order               @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  items            KitchenTicketItem[]
-}
-
-model KitchenTicketItem {
-  id                  String        @id @default(uuid()) @db.Uuid
-  kitchenTicketId     String        @db.Uuid
-  quantity            Decimal       @db.Decimal(18, 3)
-  preparationSnapshot Json
-  kitchenTicket       KitchenTicket @relation(fields: [kitchenTicketId], references: [id], onDelete: Restrict)
-}
-
-model Delivery {
-  id               String    @id @default(uuid()) @db.Uuid
-  orderId          String    @unique @db.Uuid
-  courierId        String?   @db.Uuid
-  addressSnapshot  Json
-  status           String
-  deliveryCodeHash String?
-  assignedAt       DateTime?
-  deliveredAt      DateTime?
-  failureReason    String?
-  order            Order     @relation(fields: [orderId], references: [id], onDelete: Restrict)
-
-  @@index([courierId, status])
 }
 
 model ExchangeRate {

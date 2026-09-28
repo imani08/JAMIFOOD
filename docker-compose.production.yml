@@ -6,5 +6,3 @@ services:
     restart: unless-stopped
   web:
     restart: unless-stopped
-  client:
-    restart: unless-stopped

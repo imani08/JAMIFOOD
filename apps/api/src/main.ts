@@ -7,7 +7,7 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const production = process.env.NODE_ENV === 'production';
   if (production && !process.env.DATABASE_URL) throw new Error('DATABASE_URL est obligatoire en production.');
-  const webOrigins = (process.env.WEB_ORIGIN ?? (production ? '' : 'http://localhost:3000,http://localhost:3002'))
+  const webOrigins = (process.env.WEB_ORIGIN ?? (production ? '' : 'http://localhost:3000'))
     .split(',').map(origin => origin.trim()).filter(Boolean);
   const idleMinutes = Number(process.env.SESSION_IDLE_MINUTES ?? 30);
   if (!Number.isInteger(idleMinutes) || idleMinutes < 5 || idleMinutes > 480) {
