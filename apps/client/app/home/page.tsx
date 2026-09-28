@@ -5,9 +5,10 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { ArrowRight, MapPin, QrCode, Sparkles, Utensils } from '../icons';
 import { clientApi, productImageUrl } from '../lib/api';
+import { invalidateOrderAttempt } from '../cart/idempotency';
 
 type Offers={meal:null|{name:string;description:string|null;composition:string|null;amount:string;currency:string};supplements:Array<{id:string;name:string;amount:string;currency:string;saleUnit:string}>;plans:Array<{code:string;name:string;price:string|null;currency:string|null;services:unknown;deliveryIncluded:boolean}>};
-type Menu={businessDate:string;serviceCode:string;items:Array<{id:string;name:string;imageUrl:string|null;description:string|null;remaining:number;price:{amount:string;currency:string}}>};
+type Menu={businessDate:string;serviceCode:string;imageUrl:string|null;items:Array<{id:string;name:string;imageUrl:string|null;description:string|null;remaining:number;price:{amount:string;currency:string}}>};
 type CartLine={productId:string;name:string;quantity:number;price:{amount:string;currency:string}};
 
 const serviceLabels:Record<string,string>={BREAKFAST:'Petit-déjeuner',LUNCH:'Déjeuner',DINNER:'Dîner',MAIN:'Repas'};
@@ -18,8 +19,8 @@ export default function RestaurantHomePage(){
   useEffect(()=>{clientApi<Offers>('menus/commercial-offers').then(setOffers).catch(()=>setOffers(null));clientApi<Menu|null>('menus/public').then(setMenu).catch(()=>setMenu(null));},[]);
   const formatPrice=(amount:string,currency:string)=>`${Number(amount).toLocaleString('fr-FR')} ${currency==='CDF'?'FC':currency}`;
   const serviceNames=(value:unknown)=>Array.isArray(value)?value.map(item=>serviceLabels[String(item)]??String(item)).filter(Boolean):[];
-  function addSupplement(item:Offers['supplements'][number]){let cart:CartLine[]=[];try{cart=JSON.parse(localStorage.getItem('jami_cart')??'[]') as CartLine[]}catch{}const line=cart.find(row=>row.productId===item.id);if(line)line.quantity+=1;else cart.push({productId:item.id,name:item.name,quantity:1,price:{amount:item.amount,currency:item.currency}});localStorage.setItem('jami_cart',JSON.stringify(cart));setAdded(item.name);window.setTimeout(()=>setAdded(''),1800);}
-  const dishes=menu?.items.slice(0,3)??[];const heroPhoto=productImageUrl(menu?.items.find(item=>productImageUrl(item.imageUrl))?.imageUrl);
+  function addSupplement(item:Offers['supplements'][number]){let cart:CartLine[]=[];try{cart=JSON.parse(localStorage.getItem('jami_cart')??'[]') as CartLine[]}catch{}const line=cart.find(row=>row.productId===item.id);if(line)line.quantity+=1;else cart.push({productId:item.id,name:item.name,quantity:1,price:{amount:item.amount,currency:item.currency}});localStorage.setItem('jami_cart',JSON.stringify(cart));invalidateOrderAttempt(sessionStorage);setAdded(item.name);window.setTimeout(()=>setAdded(''),1800);}
+  const dishes=menu?.items.slice(0,3)??[];const heroPhoto=productImageUrl(menu?.imageUrl)??productImageUrl(menu?.items.find(item=>productImageUrl(item.imageUrl))?.imageUrl);
   return <main className="minimal-home">
     <section className="mh-hero">
       <div className="mh-hero-copy"><span className="mh-kicker"><i/> RESTAURANT DU CAMPUS · ULC</span><h1>Le goût du campus,<br/><em>à votre rythme.</em></h1><p>Découvrez le menu publié, commandez simplement et retrouvez votre compte JAMI FOOD au même endroit.</p><div className="mh-actions"><Link className="mh-button" href="/menu">Explorer le menu <ArrowRight size={16}/></Link><Link className="mh-link" href="/account">Mon espace <ArrowRight size={15}/></Link></div><div className="mh-location"><MapPin size={15}/> Université Loyola du Congo</div></div>

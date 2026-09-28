@@ -12,9 +12,9 @@ import {
 import { Prisma } from '@jami/database';
 
 import {
-  endDate,
+  serviceEndDate,
   localDate,
-  rightDates,
+  serviceRightDates,
 } from '@jami/shared';
 
 import {
@@ -319,12 +319,14 @@ function buildRights(
   eligibleDays: number[],
   services: ServiceCode[],
   rules: Rules,
+  closures: string[] = [],
 ) {
   const dates =
-    rightDates(
+    serviceRightDates(
       startsOn,
       endsOn,
       eligibleDays,
+      closures,
     );
 
   const dailyQuota =
@@ -1136,10 +1138,14 @@ async alerts() {
           );
         }
 
+        const calendarSetting = await tx.setting.findUnique({ where: { key: 'calendrier' } });
+        if (!calendarSetting?.validated) throw new DomainError('CALENDAR_NOT_VALIDATED', 'Le calendrier commercial doit être validé avant de créer un abonnement.', 409);
+        const calendar = z.object({ weekdays: z.array(z.number().int().min(1).max(5)).min(1), closures: z.array(dateSchema).default([]) }).passthrough().parse(calendarSetting.value);
         const endsOn =
-          endDate(
+          serviceEndDate(
             body.startsOn,
             durationDays,
+            calendar.closures,
           );
 
         /*
@@ -1202,6 +1208,7 @@ async alerts() {
             uniqueDays,
             services,
             rules.data,
+            calendar.closures,
           );
           const serviceSnapshot =
   JSON.parse(
@@ -2020,10 +2027,15 @@ renew(
       const durationDays =
         version.durationDays;
 
+      const calendarSetting = await tx.setting.findUnique({ where: { key: 'calendrier' } });
+      if (!calendarSetting?.validated) throw new DomainError('CALENDAR_NOT_VALIDATED', 'Le calendrier commercial doit être validé avant de renouveler un abonnement.', 409);
+      const calendar = z.object({ weekdays: z.array(z.number().int().min(1).max(5)).min(1), closures: z.array(dateSchema).default([]) }).passthrough().parse(calendarSetting.value);
+
       const endsOn =
-        endDate(
+        serviceEndDate(
           startsOn,
           durationDays,
+          calendar.closures,
         );
 
       const overlap =
@@ -2074,6 +2086,7 @@ renew(
           eligibleDays,
           services,
           rules.data,
+          calendar.closures,
         );
 
       const serviceSnapshot =

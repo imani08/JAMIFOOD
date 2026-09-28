@@ -38,3 +38,8 @@ export async function apiForm<T>(
 
   return readResponse<T>(response);
 }
+
+export async function apiDelete<T>(path: string): Promise<T> {
+  const response = await fetch('/api/v1' + path, { method: 'DELETE', credentials: 'include', headers: { 'X-Jami-Request': '1' } });
+  return readResponse<T>(response);
+}

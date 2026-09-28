@@ -1,4 +1,10 @@
 services:
-  postgres: { ports: !reset [] }
-  api: { restart: unless-stopped }
-  web: { restart: unless-stopped }
+  postgres:
+    ports: !reset []
+    restart: unless-stopped
+  api:
+    restart: unless-stopped
+  web:
+    restart: unless-stopped
+  client:
+    restart: unless-stopped

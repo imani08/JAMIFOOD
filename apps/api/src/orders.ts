@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Headers, Injectable, Param, Post, Query, Req } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { confirmPaymentSchema, createOrderSchema, pageSchema, uuid } from '@jami/validation';
 import { Prisma } from '@jami/database';
 import { localDate } from '@jami/shared';
@@ -12,6 +13,8 @@ import {
   subscriptionLifecycleStatus,
 } from './subscription-status';
 import { audit, lockCash, lockOrder, mutate, Tx } from './transaction';
+import { PaymentTerminalService } from './payment-terminal/payment-terminal.service';
+import type { TerminalPaymentStatus } from './payment-terminal/payment-terminal.types';
 const Decimal = Prisma.Decimal;
 export function settlement(due: Prisma.Decimal, reference: string, received: Prisma.Decimal, paidCurrency: string, rate?: Prisma.Decimal) {
   if (received.lte(0)) throw new DomainError('INVALID_AMOUNT', 'Le montant reçu doit être positif.', 400);
@@ -141,12 +144,37 @@ export async function finishPayment(tx: Tx, paymentId: string, actorId: string) 
   if (
     paid.gte(order.totalAmount)
   ) {
+    // Convert this order's reservation into a sale atomically. RECEIVED orders
+    // reserve quantities; only the first successful final payment sells them.
+    if (order.menuVersionId) {
+      const menuLines = new Map<string, number>();
+      for (const item of order.items) {
+        const snapshot = item.productSnapshot as { menuVersionId?: string };
+        if (snapshot.menuVersionId === order.menuVersionId && item.productId) {
+          menuLines.set(item.productId, (menuLines.get(item.productId) ?? 0) + Number(item.quantity));
+        }
+      }
+      for (const [productId, quantity] of menuLines) {
+        const row = await tx.menuItem.findUnique({ where: { menuVersionId_productId: { menuVersionId: order.menuVersionId, productId } } });
+        if (row) {
+          const moved = await tx.menuItem.updateMany({
+            where: { id: row.id, quantityReserved: { gte: quantity } },
+            data: { quantityReserved: { decrement: quantity }, quantitySold: { increment: quantity } },
+          });
+          if (moved.count !== 1) throw new DomainError('MENU_RESERVATION_MISSING', 'La réservation du menu est absente; vérifiez la migration et les commandes en attente.', 409);
+        }
+      }
+    }
     const direct = order.items.flatMap(item=>{
       const stock=z.object({stockMode:z.literal('DIRECT'),stockItemId:z.string().uuid(),stockQuantity:z.string()}).safeParse(item.productSnapshot);
       return stock.success ? [{...stock.data,quantity:item.quantity}] : [];
     });
+    const linkedSupplements=order.items.flatMap(item=>{
+      const snapshots=z.array(z.object({quantity:z.number(),linkedStock:z.object({stockMode:z.string(),stockItemId:z.string().uuid().nullable(),stockQuantity:z.string()}).optional()})).safeParse(item.supplementsSnapshot);
+      return snapshots.success?snapshots.data.flatMap(supplement=>supplement.linkedStock?.stockMode==='DIRECT'&&supplement.linkedStock.stockItemId?[{stockItemId:supplement.linkedStock.stockItemId,stockQuantity:supplement.linkedStock.stockQuantity,quantity:item.quantity.mul(supplement.quantity)}]:[]):[];
+    });
     const quantities=new Map<string,Prisma.Decimal>();
-    for(const item of direct)quantities.set(item.stockItemId,(quantities.get(item.stockItemId)??new Decimal(0)).add(item.quantity.mul(item.stockQuantity)));
+    for(const item of [...direct,...linkedSupplements])quantities.set(item.stockItemId,(quantities.get(item.stockItemId)??new Decimal(0)).add(item.quantity.mul(item.stockQuantity)));
     for(const [stockId,quantity] of [...quantities].sort(([a],[b])=>a.localeCompare(b)))await move(tx,stockId,quantity.negated(),'DIRECT_SALE',order.id,'Vente validée : '+order.number,actorId);
     await tx.order.update({
       where: {
@@ -373,7 +401,7 @@ const products =
         if (!p || !p.available) throw new DomainError('PRICE_UNAVAILABLE', 'Article indisponible.', 400);
         if (menuVersion) {
           const menuItem = menuVersion.items.find(row => row.productId === p.id);
-          if (!menuItem?.available || item.quantity > menuItem.quantityAvailable - menuItem.quantitySold) throw new DomainError('MENU_ITEM_UNAVAILABLE', 'Article épuisé ou absent de cette version du menu.');
+          if (!menuItem?.available || item.quantity > menuItem.quantityAvailable - menuItem.quantitySold - menuItem.quantityReserved) throw new DomainError('MENU_ITEM_UNAVAILABLE', 'Article épuisé ou absent de cette version du menu.');
           const snapshot = z.object({categories:z.record(z.object({amount:z.string(),currency:z.string(),priceVersionId:z.string()}))}).parse(menuItem.priceSnapshot);
           const fixed = snapshot.categories[data.categoryCode];
           if (!fixed || fixed.currency !== data.currency) throw new DomainError('PRICE_UNAVAILABLE', 'Tarif du menu indisponible pour cette catégorie et cette devise.');
@@ -399,9 +427,15 @@ const products =
       });
       const total = lines.reduce((n, i) => n.add(i.lineTotal), new Decimal(0));
       if (menuVersion) {
+        const menuQuantities = new Map<string, { itemId: string; quantity: number; remaining: number }>();
         for (const item of data.items) {
           const row = menuVersion.items.find(value => value.productId === item.productId)!;
-          const updated = await tx.menuItem.updateMany({where:{id:row.id,available:true,quantitySold:{lte:row.quantityAvailable-item.quantity}},data:{quantitySold:{increment:item.quantity}}});
+          const previous = menuQuantities.get(row.id);
+          menuQuantities.set(row.id, { itemId: row.id, quantity: (previous?.quantity ?? 0) + item.quantity, remaining: row.quantityAvailable - row.quantitySold - row.quantityReserved });
+        }
+        for (const line of menuQuantities.values()) {
+          if (line.quantity > line.remaining) throw new DomainError('MENU_ITEM_UNAVAILABLE', 'Quantité du menu insuffisante.');
+          const updated = await tx.menuItem.updateMany({where:{id:line.itemId,available:true,quantityReserved: { lte: menuVersion.items.find(value => value.id === line.itemId)!.quantityAvailable - menuVersion.items.find(value => value.id === line.itemId)!.quantitySold - line.quantity }},data:{quantityReserved:{increment:line.quantity}}});
           if(updated.count!==1)throw new DomainError('MENU_ITEM_UNAVAILABLE','Quantité du menu insuffisante.');
         }
       }
@@ -753,6 +787,9 @@ const products =
           'Payment',
           payment.id,
         );
+        if (payment.method === 'CARD') {
+          await audit(tx, actorId, 'TPE_PAYMENT_PENDING', 'Payment', payment.id, { paymentId: payment.id, orderId, amount: payment.amountDue.toString(), currency: payment.referenceCurrency, externalReference: payment.externalReference });
+        }
       }
 
       const remainingAfter =
@@ -797,6 +834,7 @@ const products =
   `;
 }
       await tx.payment.update({ where: { id }, data: { status: 'CONFIRMED', confirmedAt: new Date(), confirmedById: actorId } });
+      if (p.method === 'CARD') await audit(tx, actorId, 'TPE_PAYMENT_APPROVED', 'Payment', id, { paymentId: id, orderId: p.orderId, amount: p.amountDue.toString(), currency: p.referenceCurrency, externalReference: p.externalReference });
       await finishPayment(tx, id, actorId);
       return tx.payment.findUniqueOrThrow({ where: { id } });
     });
@@ -837,6 +875,7 @@ const products =
           where: { id },
 
           include: {
+            items: true,
             payments: true,
           },
         });
@@ -881,6 +920,18 @@ const products =
             payment.status ===
             'CONFIRMED',
         );
+
+      // An unpaid cancellation releases menu quantities reserved at creation.
+      if (!hasConfirmedPayment && order.menuVersionId) {
+        for (const line of order.items) {
+          const snapshot = line.productSnapshot as { menuVersionId?: string };
+          if (snapshot.menuVersionId !== order.menuVersionId || !line.productId) continue;
+          await tx.menuItem.updateMany({
+            where: { menuVersionId: order.menuVersionId, productId: line.productId, quantityReserved: { gte: Number(line.quantity) } },
+            data: { quantityReserved: { decrement: Number(line.quantity) } },
+          });
+        }
+      }
 
       await tx.order.update({
         where: { id },
@@ -1326,6 +1377,23 @@ const refundable =
         }
       }
 
+      // Subscription-covered orders are sold at physical handover.
+      if (!order.paymentRequired && order.menuVersionId && (status === 'DELIVERED' || status === 'SERVED')) {
+        const lines = await tx.orderItem.findMany({ where: { orderId: id } });
+        const totals = new Map<string, number>();
+        for (const line of lines) {
+          const snapshot = line.productSnapshot as { menuVersionId?: string };
+          if (snapshot.menuVersionId === order.menuVersionId && line.productId) totals.set(line.productId, (totals.get(line.productId) ?? 0) + Number(line.quantity));
+        }
+        for (const [productId, quantity] of totals) {
+          const changed = await tx.menuItem.updateMany({
+            where: { menuVersionId: order.menuVersionId, productId, quantityReserved: { gte: quantity } },
+            data: { quantityReserved: { decrement: quantity }, quantitySold: { increment: quantity } },
+          });
+          if (changed.count !== 1) throw new DomainError('MENU_RESERVATION_MISSING', 'La réservation du menu est absente; vérifiez la migration.', 409);
+        }
+      }
+
       if (
         order.paymentRequired &&
         !order.payments.some(
@@ -1378,7 +1446,7 @@ const refundable =
 }
 @Controller('orders')
 export class OrdersController {
-  constructor(private readonly orders: OrdersService, private readonly prisma: PrismaService) {}
+  constructor(private readonly orders: OrdersService, private readonly prisma: PrismaService, private readonly terminal: PaymentTerminalService) {}
   @Require('orders.create') @Post() create(@Body() body: unknown, @Headers('idempotency-key') key: string | undefined, @Req() req: AuthRequest) { return this.orders.create(body, key, req.actor.id).then(data => ({ success: true, data })); }
   @Require('cash.refund')
 @Post('payments/:id/refund')
@@ -1423,6 +1491,72 @@ cancel(
     }));
 }
   @Require('sales.create') @Post(':id/payments') pay(@Param('id') id: string, @Body() body: unknown, @Headers('idempotency-key') key: string | undefined, @Req() req: AuthRequest) { return this.orders.pay(id, body, key, req.actor.id).then(data => ({ success: true, data })); }
+  @Require('sales.create') @Get('terminal/config') terminalConfig() { return { success: true, data: { mode: this.terminal.mode, provider: this.terminal.providerName, terminalId: this.terminal.terminalId || null, simulated: this.terminal.isMockEnabled } }; }
+  @Require('sales.create') @Post(':id/terminal-payments') async startTerminalPayment(@Param('id') id: string, @Body() input: unknown, @Headers('idempotency-key') key: string | undefined, @Req() req: AuthRequest) {
+    uuid.parse(id);
+    if (!key || key.length < 8 || key.length > 128) throw new DomainError('IDEMPOTENCY_KEY_REQUIRED', 'Une clé d’idempotence valide est requise.', 400);
+    const body = z.object({ cashSessionId: uuid, externalReference: z.string().trim().min(1).max(120).optional() }).strict().parse(input);
+    this.terminal.assertReady();
+    if (this.terminal.mode === 'MANUAL' && !body.externalReference) throw new DomainError('TERMINAL_REFERENCE_REQUIRED', 'Saisissez uniquement la référence non sensible fournie par le TPE.', 400);
+    if (this.terminal.mode !== 'MANUAL' && body.externalReference) throw new DomainError('TERMINAL_REFERENCE_NOT_ALLOWED', 'La référence est fournie par le simulateur ou le terminal configuré.', 400);
+    const order = await this.prisma.order.findUnique({ where: { id }, include: { payments: true } });
+    if (!order || order.status !== 'RECEIVED' || !order.paymentRequired) throw new DomainError('ORDER_NOT_PAYABLE', 'Cette commande ne peut plus recevoir de paiement.', 409);
+    const remaining = order.totalAmount.sub(order.payments.filter(p => p.status === 'CONFIRMED').reduce((sum, p) => sum.add(p.amountDue), new Prisma.Decimal(0)));
+    if (remaining.lte(0)) throw new DomainError('ORDER_ALREADY_PAID', 'Cette commande est déjà réglée.', 409);
+    const reference = this.terminal.mode === 'MOCK' ? `MOCK-${createHash('sha256').update(`${id}:${key}`).digest('hex').slice(0, 32)}` : body.externalReference;
+    const payment = await this.orders.pay(id, { cashSessionId: body.cashSessionId, method: 'CARD', receivedAmount: remaining.toString(), receivedCurrency: order.currency, externalReference: reference }, key, req.actor.id) as { id: string; orderId: string | null; amountDue: { toString(): string }; referenceCurrency: 'CDF' | 'USD'; status: string; [key: string]: unknown };
+    const terminal = await this.terminal.startPayment({ paymentId: payment.id, orderId: id, amount: payment.amountDue.toString(), currency: payment.referenceCurrency, terminalId: this.terminal.terminalId, externalReference: reference });
+    await this.prisma.auditLog.create({ data: { actorId: req.actor.id, action: 'TPE_PAYMENT_STARTED', entityType: 'Payment', entityId: payment.id, newValue: { paymentId: payment.id, orderId: id, terminalId: terminal.terminalId ?? null, provider: terminal.provider ?? this.terminal.providerName, externalReference: terminal.externalReference ?? reference, amount: payment.amountDue.toString(), currency: payment.referenceCurrency } } });
+    return { success: true, data: { ...payment, terminal, mode: this.terminal.mode } };
+  }
+  @Require('sales.create') @Post('payments/:id/terminal-simulate') async simulateTerminalPayment(@Param('id') id: string, @Body() input: unknown, @Headers('idempotency-key') key: string | undefined, @Req() req: AuthRequest) {
+    uuid.parse(id);
+    const { status } = z.object({ status: z.enum(['APPROVED', 'DECLINED', 'CANCELLED', 'TIMEOUT', 'UNKNOWN']) }).strict().parse(input);
+    const payment = await this.prisma.payment.findUnique({ where: { id } });
+    if (!payment || payment.method !== 'CARD' || payment.status !== 'PENDING') throw new DomainError('PAYMENT_NOT_PENDING', 'Aucun paiement TPE en attente à simuler.', 409);
+    const result = this.terminal.simulate(id, status as TerminalPaymentStatus);
+    if (status === 'APPROVED') {
+      const data = await this.orders.confirmExternal(id, key, req.actor.id);
+      return { success: true, data: { payment: data, terminal: result } };
+    }
+    const action = status === 'DECLINED' ? 'TPE_PAYMENT_DECLINED' : status === 'CANCELLED' ? 'TPE_PAYMENT_CANCELLED' : 'TPE_PAYMENT_TIMEOUT';
+    const nextStatus = status === 'DECLINED' ? 'FAILED' : status === 'CANCELLED' ? 'CANCELLED' : 'PENDING';
+    const updated = await mutate(this.prisma, 'tpe.simulate', key, req.actor.id, { id, status }, async tx => {
+      await tx.$queryRaw`SELECT id FROM "Payment" WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.payment.findUniqueOrThrow({ where: { id } });
+      if (current.method !== 'CARD' || current.status !== 'PENDING') throw new DomainError('PAYMENT_NOT_PENDING', 'Aucun paiement TPE en attente à simuler.', 409);
+      if (nextStatus !== 'PENDING') await tx.payment.update({ where: { id }, data: { status: nextStatus } });
+      await audit(tx, req.actor.id, action, 'Payment', id, { paymentId: id, orderId: current.orderId, terminalId: result.terminalId ?? null, provider: 'MOCK', externalReference: current.externalReference, amount: current.amountDue.toString(), currency: current.referenceCurrency, result: status });
+      return { ...current, status: nextStatus };
+    });
+    return { success: true, data: { payment: updated, terminal: result } };
+  }
+  @Require('sales.create') @Post('payments/:id/terminal-status') async terminalPaymentStatus(@Param('id') id: string, @Headers('idempotency-key') key: string | undefined, @Req() req: AuthRequest) {
+    uuid.parse(id);
+    const payment = await this.prisma.payment.findUnique({ where: { id } });
+    if (!payment || payment.method !== 'CARD') throw new DomainError('TERMINAL_PAYMENT_NOT_FOUND', 'Paiement carte introuvable.', 404);
+    const terminal = await this.terminal.getPaymentStatus(id);
+    const metadata = { paymentId: id, orderId: payment.orderId, terminalId: terminal.terminalId ?? null, provider: terminal.provider ?? this.terminal.providerName, externalReference: terminal.externalReference ?? payment.externalReference, amount: payment.amountDue.toString(), currency: payment.referenceCurrency, result: terminal.status };
+    await this.prisma.auditLog.create({ data: { actorId: req.actor.id, action: 'TPE_PAYMENT_STATUS_CHECKED', entityType: 'Payment', entityId: id, newValue: metadata } });
+    let current: unknown = payment;
+    if (payment.status === 'PENDING' && terminal.status === 'APPROVED') current = await this.orders.confirmExternal(id, key, req.actor.id);
+    else if (payment.status === 'PENDING' && (terminal.status === 'DECLINED' || terminal.status === 'CANCELLED')) {
+      const nextStatus = terminal.status === 'DECLINED' ? 'FAILED' : 'CANCELLED';
+      current = await mutate(this.prisma, 'tpe.status', key, req.actor.id, { id, result: terminal.status }, async tx => {
+        await tx.$queryRaw`SELECT id FROM "Payment" WHERE id = ${id}::uuid FOR UPDATE`;
+        const locked = await tx.payment.findUniqueOrThrow({ where: { id } });
+        if (locked.status !== 'PENDING' || locked.method !== 'CARD') throw new DomainError('PAYMENT_NOT_PENDING', 'Le paiement n’est plus en attente.', 409);
+        const updated = await tx.payment.update({ where: { id }, data: { status: nextStatus } });
+        await audit(tx, req.actor.id, terminal.status === 'DECLINED' ? 'TPE_PAYMENT_DECLINED' : 'TPE_PAYMENT_CANCELLED', 'Payment', id, metadata);
+        return updated;
+      });
+    } else {
+      if (payment.status === 'PENDING' && (terminal.status === 'TIMEOUT' || terminal.status === 'UNKNOWN')) {
+        await this.prisma.auditLog.create({ data: { actorId: req.actor.id, action: 'TPE_PAYMENT_TIMEOUT', entityType: 'Payment', entityId: id, newValue: metadata } });
+      }
+    }
+    return { success: true, data: { payment: current, terminal } };
+  }
   @Require('payments.confirm') @Post('payments/:id/confirm') confirm(@Param('id') id: string, @Headers('idempotency-key') key: string | undefined, @Req() req: AuthRequest) { return this.orders.confirmExternal(id, key, req.actor.id).then(data => ({ success: true, data })); }
   @Require('orders.read') @Get() async list(@Query() query: unknown) {
     const { page, limit, q } = pageSchema.parse(query); const where = q ? { number: { contains: q, mode: 'insensitive' as const } } : {};

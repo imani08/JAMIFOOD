@@ -32,6 +32,7 @@ export async function clientApi<T>(path: string, options: { method?: 'GET' | 'PO
 }
 
 export function productImageUrl(value?: string | null) {
-  if (!value || !/^\/api\/v1\/product-images\/[a-f0-9-]+\.(?:jpg|png|webp)$/i.test(value)) return null;
+  if (!value || value === '/products/placeholder.svg') return null;
+  if (!/^\/api\/v1\/product-images\/[a-f0-9-]+\.(?:jpg|png|webp)$/i.test(value)) return null;
   return value;
 }

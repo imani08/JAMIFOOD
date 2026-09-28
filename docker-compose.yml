@@ -38,6 +38,7 @@ x-dev-source-mounts: &dev-source-mounts
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: jami_food
       POSTGRES_USER: jami
@@ -53,6 +54,7 @@ services:
       retries: 15
 
   api:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile.api.dev
@@ -79,6 +81,12 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       PRODUCT_IMAGE_DIR: /app/storage/product-images
       CLIENT_PHOTO_DIR: /app/storage/client-photos
+      TPE_MODE: ${TPE_MODE:-MOCK}
+      TPE_PROVIDER: ${TPE_PROVIDER:-}
+      TPE_TERMINAL_ID: ${TPE_TERMINAL_ID:-}
+      TPE_MERCHANT_ID: ${TPE_MERCHANT_ID:-}
+      TPE_API_URL: ${TPE_API_URL:-}
+      TPE_API_KEY: ${TPE_API_KEY:-}
     volumes: *dev-source-mounts
     ports:
       - "3001:3001"
@@ -94,6 +102,7 @@ services:
     command: ["sh", "-c", "pnpm --filter @jami/database build && pnpm --filter @jami/shared build && pnpm --filter @jami/validation build && pnpm --filter @jami/api dev"]
 
   web:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile.web.dev
@@ -112,6 +121,7 @@ services:
     command: ["sh", "-c", "pnpm --filter @jami/web dev"]
 
   client:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile.client.dev

@@ -33,6 +33,10 @@ import { ApiExceptionFilter } from './http';
 import { UsersController } from './users';
 import { ClientPortalController, ClientPortalService } from './client-portal';
 import { MailService } from './mail.service';
+import { PaymentTerminalService } from './payment-terminal/payment-terminal.service';
+import { MockTerminalProvider } from './payment-terminal/providers/mock.provider';
+import { ManualTerminalProvider } from './payment-terminal/providers/manual.provider';
+import { IntegratedTerminalProvider } from './payment-terminal/providers/integrated.provider';
 
 @Module({
   controllers: [
@@ -61,6 +65,10 @@ import { MailService } from './mail.service';
     MealsService,
     ClientPortalService,
     MailService,
+    PaymentTerminalService,
+    MockTerminalProvider,
+    ManualTerminalProvider,
+    IntegratedTerminalProvider,
     {
       provide: APP_GUARD,
       useClass: AccessGuard,

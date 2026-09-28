@@ -84,6 +84,11 @@ enum Currency {
   CDF
 }
 
+enum ProductOptionGroupType {
+  VARIANT
+  SUPPLEMENT
+}
+
 enum ServiceMode {
   DINE_IN
   TAKEAWAY
@@ -476,9 +481,45 @@ model Product {
   prices     ProductPrice[]
   orderItems OrderItem[]
   menuItems  MenuItem[]
+  optionGroups ProductOptionGroup[]
+  linkedOptions ProductOption[] @relation("LinkedProductOptions")
 
   @@index([categoryId, active, available])
   @@index([name])
+}
+
+model ProductOptionGroup {
+  id            String   @id @default(uuid()) @db.Uuid
+  productId     String   @db.Uuid
+  name          String
+  type          ProductOptionGroupType @default(VARIANT)
+  required      Boolean  @default(false)
+  minSelections Int      @default(0)
+  maxSelections Int      @default(1)
+  position      Int      @default(0)
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  options       ProductOption[]
+  @@index([productId, active, position])
+}
+
+model ProductOption {
+  id             String   @id @default(uuid()) @db.Uuid
+  groupId        String   @db.Uuid
+  name           String
+  linkedProductId String?  @db.Uuid
+  priceDelta     Decimal  @default(0) @db.Decimal(18, 2)
+  currency       Currency @default(CDF)
+  position       Int      @default(0)
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  group          ProductOptionGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  linkedProduct  Product? @relation("LinkedProductOptions", fields: [linkedProductId], references: [id], onDelete: Restrict)
+  @@index([groupId, active, position])
+  @@index([linkedProductId])
 }
 
 model ProductPrice {
@@ -551,6 +592,7 @@ model MenuItem {
 
   quantityAvailable Int
   quantitySold      Int     @default(0)
+  quantityReserved  Int     @default(0)
   available         Boolean @default(true)
   position          Int     @default(0)
 

@@ -7,7 +7,7 @@ import { resolve } from 'node:path';
 import * as argon2 from 'argon2';
 import sharp from 'sharp';
 import { z } from 'zod';
-import { ClientAccountType, ClientVerificationStatus } from '@jami/database';
+import { ClientAccountType, ClientVerificationStatus, Prisma } from '@jami/database';
 import { AuthRequest, Public, Require } from './auth';
 import { DomainError } from './http';
 import { PrismaService } from './prisma.service';
@@ -21,6 +21,14 @@ const cookieOptions = () => ({ httpOnly: true, secure: process.env.COOKIE_SECURE
 const accountTypeByCategory = { STUDENT_HOME: 'ETUDIANT_HOME', STUDENT_EXTERNAL: 'ETUDIANT_EXTERNE', STAFF: 'PERSONNEL_ULC' } as const;
 const sameName = (left:string,right:string) => left.normalize('NFKC').trim().toLocaleLowerCase('fr') === right.normalize('NFKC').trim().toLocaleLowerCase('fr');
 const registerSchema = z.object({ type: z.nativeEnum(ClientAccountType), firstName: z.string().trim().min(1).max(80), lastName: z.string().trim().min(1).max(80), email: z.string().trim().email().max(254), password: z.string().min(12).max(256), confirmPassword: z.string().min(12).max(256), ulcNumber: z.string().trim().min(2).max(50), faculty: z.string().trim().max(120).optional(), promotion: z.string().trim().max(80).optional(), phone: z.string().trim().max(30).optional() }).strict().refine(body => body.password === body.confirmPassword, { path: ['confirmPassword'], message: 'Les mots de passe ne correspondent pas.' }).refine(body => body.type === 'STAFF' || (!!body.faculty && !!body.promotion), { path: ['faculty'], message: 'Faculté et promotion obligatoires pour les étudiants.' });
+export const clientCreateOrderSchema = z.object({ menuVersionId: z.string().uuid(), serviceMode: z.enum(['DINE_IN','TAKEAWAY']), currency: z.enum(['CDF','USD']), items: z.array(z.object({ productId: z.string().uuid(), quantity: z.number().int().min(1).max(100), variant: z.string().trim().min(1).max(100).optional(), optionSelections: z.array(z.object({ groupId: z.string().uuid(), optionIds: z.array(z.string().uuid()).max(10) }).strict()).max(20).optional() }).strict()).min(1).max(50) }).strict();
+export function clientOrderReplay<T extends { id:string; clientId:string|null; clientRequestHash:string|null; number:string; status:string; totalAmount:unknown; commercialTotal:unknown; coveredAmount:unknown; mealRightId:string|null; currency:string; createdAt:Date; items:Array<{quantity:unknown;lineTotal:unknown;productSnapshot:unknown}> }>(previous:T, clientId:string, requestHash:string) {
+  if (previous.clientId !== clientId || previous.clientRequestHash !== requestHash) throw new DomainError('IDEMPOTENCY_KEY_REUSED','Cette clé d’idempotence est déjà liée à une autre commande.',409);
+  return {
+    id:previous.id,number:previous.number,status:previous.status,totalAmount:previous.totalAmount,commercialTotal:previous.commercialTotal,coveredAmount:previous.coveredAmount,mealRightId:previous.mealRightId,currency:previous.currency,createdAt:previous.createdAt,
+    lines:previous.items.map(item=>{const snapshot=item.productSnapshot as {name?:string;supplement?:boolean;coveredAmount?:number};const commercialAmount=Number(item.lineTotal);const coveredAmount=Number(snapshot.coveredAmount??0);return{name:snapshot.name??'Article',commercialAmount,coveredAmount,amountDue:commercialAmount-coveredAmount,supplement:snapshot.supplement===true};}),
+  };
+}
 
 @Injectable()
 export class ClientPortalService {
@@ -309,7 +317,7 @@ export class ClientPortalService {
     const s = await this.authenticate(req); const clientId = s.account.clientId;
     if (section === 'subscriptions') return { success: true, data: await this.db.subscription.findMany({ where: { clientId }, orderBy: { createdAt: 'desc' }, take: 100, select: { id: true, status: true, startsOn: true, endsOn: true, amount: true, currency: true, paidAmount: true, balance: true, deliveryIncluded: true, serviceSnapshot: true, rights: { select: { id:true,status:true,businessDate:true,serviceCode:true,consumedAt:true } }, planVersion: { select: { version:true,price:true,currency:true,services:true,plan: { select: { name: true } } } } } }) };
     if (section === 'rights') return { success: true, data: await this.db.mealRight.findMany({ where: { subscription: { clientId } }, orderBy: [{ businessDate: 'desc' }, { serviceCode: 'asc' }], take: 150, select: { id: true, businessDate: true, serviceCode: true, status: true, consumedAt: true, reservedAt:true, subscription: { select: { planVersion: { select: { plan: { select: { name: true } } } } } } } }) };
-    if (section === 'orders' || section === 'deliveries') return { success: true, data: await this.db.order.findMany({ where: { clientId, ...(section === 'deliveries' ? { serviceMode: 'DELIVERY' as const } : {}) }, orderBy: { createdAt: 'desc' }, take: 100, select: { id: true, number: true, status: true, serviceMode: true, totalAmount: true, commercialTotal:true, coveredAmount:true, mealRightId:true, currency: true, createdAt: true, items: { select: { quantity: true, unitPrice: true, lineTotal:true, productSnapshot: true } } } }) };
+    if (section === 'orders' || section === 'deliveries') return { success: true, data: await this.db.order.findMany({ where: { clientId, ...(section === 'deliveries' ? { serviceMode: 'DELIVERY' as const } : {}) }, orderBy: { createdAt: 'desc' }, take: 100, select: { id: true, number: true, status: true, serviceMode: true, totalAmount: true, commercialTotal:true, coveredAmount:true, mealRightId:true, currency: true, createdAt: true, items: { select: { quantity: true, unitPrice: true, lineTotal:true, productSnapshot: true, variantsSnapshot:true, supplementsSnapshot:true } } } }) };
     if (section === 'payments' || section === 'receipts') return { success: true, data: await this.db.payment.findMany({ where: { order: { clientId }, ...(section === 'receipts' ? { status: 'CONFIRMED' as const } : {}) }, orderBy: { createdAt: 'desc' }, take: 100, select: { id: true, orderId: true, status: true, method: true, referenceCurrency: true, amountDue: true, receivedAmount: true, receivedCurrency: true, confirmedAt: true, order: { select: { number: true, createdAt: true } } } }) };
     if (section === 'activity') {
       const [events, orders, subscriptions] = await Promise.all([this.db.clientPortalEvent.findMany({ where: { accountId: s.accountId }, orderBy: { createdAt: 'desc' }, take: 50, select: { action: true, createdAt: true } }), this.db.order.findMany({ where: { clientId }, orderBy: { createdAt: 'desc' }, take: 25, select: { number: true, status: true, createdAt: true } }), this.db.subscription.findMany({ where: { clientId }, orderBy: { createdAt: 'desc' }, take: 25, select: { status: true, createdAt: true } })]);
@@ -319,7 +327,7 @@ export class ClientPortalService {
   }
 
   async order(req: Request, id: string) {
-    const s = await this.authenticate(req); const order = await this.db.order.findFirst({ where: { id, clientId: s.account.clientId }, select: { id: true, number: true, status: true, serviceMode: true, totalAmount: true, commercialTotal:true, coveredAmount:true, mealRightId:true, currency: true, createdAt: true, items: { select: { quantity: true, unitPrice: true, lineTotal: true, productSnapshot: true, supplementsSnapshot:true } }, statusHistory: { orderBy: { createdAt: 'asc' }, select: { toStatus: true, createdAt: true } }, delivery: { select: { status: true, assignedAt: true, deliveredAt: true } } } });
+    const s = await this.authenticate(req); const order = await this.db.order.findFirst({ where: { id, clientId: s.account.clientId }, select: { id: true, number: true, status: true, serviceMode: true, totalAmount: true, commercialTotal:true, coveredAmount:true, mealRightId:true, currency: true, createdAt: true, items: { select: { quantity: true, unitPrice: true, lineTotal: true, productSnapshot: true, variantsSnapshot:true, supplementsSnapshot:true } }, statusHistory: { orderBy: { createdAt: 'asc' }, select: { toStatus: true, createdAt: true } }, delivery: { select: { status: true, assignedAt: true, deliveredAt: true } } } });
     if (!order) throw new DomainError('ORDER_NOT_FOUND', 'Commande introuvable.', 404);
     return { success: true, data: order };
   }
@@ -327,55 +335,80 @@ export class ClientPortalService {
   async createOrder(req: Request, input: unknown, idempotencyKey: string | undefined) {
     const s = await this.authenticate(req);
     const key=z.string().uuid().parse(idempotencyKey);
-    const body = z.object({ menuVersionId: z.string().uuid(), serviceMode: z.enum(['DINE_IN','TAKEAWAY']), currency: z.enum(['CDF','USD']), items: z.array(z.object({ productId: z.string().uuid(), quantity: z.number().int().min(1).max(100) }).strict()).min(1).max(50).refine(items=>new Set(items.map(item=>item.productId)).size===items.length,'Un produit ne peut apparaître qu’une fois dans une commande.') }).strict().parse(input);
+    const body = clientCreateOrderSchema.parse(input);
     const requestHash=hash(JSON.stringify(body));
     const publicPriceCategory = process.env.PUBLIC_PRICE_CATEGORY_CODE;
     if (s.account.verificationStatus !== 'VERIFIED' && !publicPriceCategory) throw new DomainError('ACCOUNT_PENDING_VERIFICATION', 'Votre compte doit être vérifié avant de passer une commande.', 403);
-    const menuVersion = await this.db.menuVersion.findFirst({ where: { id: body.menuVersionId, status: 'PUBLISHED', menu: { businessDate: new Date(new Intl.DateTimeFormat('en-CA', { timeZone: process.env.RESTAURANT_TIMEZONE ?? 'Africa/Kinshasa' }).format(new Date()) + 'T00:00:00.000Z') } }, include: { items: { where: { available: true, product: { active: true, available: true } } }, menu: true } });
-    if (!menuVersion) throw new DomainError('MENU_UNAVAILABLE', 'Ce menu n’est plus publié pour aujourd’hui.', 409);
     const result = await this.db.$transaction(async tx => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
-      const previous=await tx.order.findUnique({where:{clientIdempotencyKey:key}});
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`client-order:${key}`}, 0))`;
+      const previous=await tx.order.findUnique({where:{clientIdempotencyKey:key},include:{items:{select:{quantity:true,lineTotal:true,productSnapshot:true}}}});
       if(previous) {
-        if(previous.clientId!==s.account.clientId||previous.clientRequestHash!==requestHash)throw new DomainError('IDEMPOTENCY_KEY_REUSED','Cette clé a déjà été utilisée pour une autre commande.',409);
-        return {id:previous.id,number:previous.number,status:previous.status,totalAmount:previous.totalAmount,commercialTotal:previous.commercialTotal,coveredAmount:previous.coveredAmount,mealRightId:previous.mealRightId,currency:previous.currency,createdAt:previous.createdAt};
+        return clientOrderReplay(previous,s.account.clientId,requestHash);
       }
+      const menuVersion = await tx.menuVersion.findFirst({ where: { id: body.menuVersionId, status: 'PUBLISHED', menu: { businessDate: new Date(new Intl.DateTimeFormat('en-CA', { timeZone: process.env.RESTAURANT_TIMEZONE ?? 'Africa/Kinshasa' }).format(new Date()) + 'T00:00:00.000Z') } }, include: { items: { where: { available: true, product: { active: true, available: true } } }, menu: true } });
+      if (!menuVersion) throw new DomainError('MENU_UNAVAILABLE', 'Ce menu n’est plus publié pour aujourd’hui.', 409);
       await tx.$queryRaw`SELECT id FROM "MenuVersion" WHERE id = ${menuVersion.id}::uuid FOR UPDATE`;
       const latest = await tx.menuVersion.findUniqueOrThrow({ where: { id: menuVersion.id }, include: { items: true, menu: true } });
-      const products = await tx.product.findMany({ where: { id: { in: body.items.map(row => row.productId) }, active: true, available: true }, include: { category: true, prices: { include: { versions: { where: { status: 'ACTIVE', effectiveFrom: { lte: new Date() }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: new Date() } }] }, orderBy: { version: 'desc' } } } } } });
+      const products = await tx.product.findMany({ where: { id: { in: body.items.map(row => row.productId) }, active: true, available: true }, include: { category: true, optionGroups: { where: { active: true }, orderBy: { position: 'asc' }, include: { options: { where: { active: true }, orderBy: { position: 'asc' } } } }, prices: { include: { versions: { where: { status: 'ACTIVE', effectiveFrom: { lte: new Date() }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: new Date() } }] }, orderBy: { version: 'desc' } } } } } });
       const categoryCodes = s.account.verificationStatus === 'VERIFIED' ? [s.account.client.category.code] : [publicPriceCategory!];
-      const lines = body.items.map(row => {
+      const lines = await Promise.all(body.items.map(async row => {
         const product = products.find(value => value.id === row.productId); const item = latest.items.find(value => value.productId === row.productId);
         const isSupplement=product?.category.code==='SUPPLEMENT';
-        if (!product || (!isSupplement && (!item || !item.available || row.quantity > item.quantityAvailable - item.quantitySold))) throw new DomainError('MENU_ITEM_UNAVAILABLE', 'Un article est indisponible ou épuisé.', 409);
+        if (!product || (!isSupplement && (!item || !item.available || row.quantity > item.quantityAvailable - item.quantitySold - item.quantityReserved))) throw new DomainError('MENU_ITEM_UNAVAILABLE', 'Un article est indisponible ou épuisé.', 409);
+        if (item?.variants && Array.isArray(item.variants) && item.variants.length > 0 && !row.variant) throw new DomainError('MENU_VARIANT_REQUIRED','Choisissez un accompagnement avant de continuer.',400);
+        if (row.variant && (!item || !Array.isArray(item.variants) || !item.variants.includes(row.variant))) throw new DomainError('MENU_VARIANT_INVALID','Cette variante n’est pas proposée pour ce plat.',400);
         const snapshot = item?.priceSnapshot as { categories?: Record<string,{amount:string;currency:string;priceVersionId:string}> }|null;
         const menuPrice=categoryCodes.map(code=>({code,price:snapshot?.categories?.[code]})).find(value=>value.price?.currency===body.currency);
         const supplementPrice=isSupplement?categoryCodes.map(code=>({code,price:product.prices.find(pp=>pp.categoryCode===code)?.versions[0]})).find(value=>value.price?.currency===body.currency)??{code:'ETUDIANT_EXTERNE',price:product.prices.find(pp=>pp.categoryCode==='ETUDIANT_EXTERNE')?.versions[0]}:undefined;
         const selected=menuPrice?.price?menuPrice:supplementPrice;
         if (!selected?.price) throw new DomainError('PRICE_UNAVAILABLE', 'Le tarif demandé n’est pas disponible.', 409);
-        return { id:item?.id??null,product,menuItem:item,quantity:row.quantity,price:selected.price,productSnapshot:{name:product.name,menuVersionId:latest.id,clientCategoryCode:selected.code,priceVersionId:'priceVersionId' in selected.price?selected.price.priceVersionId:null,supplement:isSupplement} };
-      });
-      const total = lines.reduce((sum,row)=>sum+Number(row.price.amount)*row.quantity,0);
+        const selections=row.optionSelections??[];
+        if(new Set(selections.map(s=>s.groupId)).size!==selections.length)throw new DomainError('OPTIONS_INVALID','Un groupe d’options ne peut être envoyé qu’une fois.',400);
+        const groups=product.optionGroups.filter(group=>group.active);
+        if(selections.some(selection=>!groups.some(group=>group.id===selection.groupId)))throw new DomainError('OPTIONS_INVALID','Un choix ne correspond pas à ce produit.',400);
+        const variantSnapshot:Record<string,string>={};const supplementsSnapshot:Array<Record<string,unknown>>=[];let unitAmount=Number(selected.price.amount);
+        for(const group of groups){
+          const chosen=selections.find(selection=>selection.groupId===group.id)?.optionIds??[];
+          if(new Set(chosen).size!==chosen.length||chosen.length<group.minSelections||chosen.length>group.maxSelections||(group.required&&chosen.length===0))throw new DomainError('OPTIONS_SELECTION_INVALID',`Choisissez ${group.minSelections===group.maxSelections?`exactement ${group.minSelections}`:`entre ${group.minSelections} et ${group.maxSelections}`} option(s) pour « ${group.name} ».`,400);
+          for(const optionId of chosen){
+            const option=group.options.find(value=>value.id===optionId&&value.active);if(!option)throw new DomainError('OPTION_UNAVAILABLE',`L’option sélectionnée dans « ${group.name} » n’est plus disponible.`,409);
+            if(group.type==='VARIANT'){variantSnapshot[group.name]=option.name;continue;}
+            if(option.currency!==body.currency)throw new DomainError('OPTION_CURRENCY_MISMATCH','La devise de ce supplément ne correspond pas à la commande.',409);
+            let amount=Number(option.priceDelta);let linkedStock:Record<string,unknown>|undefined;
+            if(option.linkedProductId){
+              const linked=await tx.product.findFirst({where:{id:option.linkedProductId,active:true,available:true,category:{active:true}},include:{stockItem:true,prices:{where:{categoryCode:selected.code},include:{versions:{where:{status:'ACTIVE',effectiveFrom:{lte:new Date()},OR:[{effectiveTo:null},{effectiveTo:{gt:new Date()}}]},orderBy:{effectiveFrom:'desc'},take:1}}}}});
+              const linkedPrice=linked?.prices[0]?.versions[0];if(!linked||!linkedPrice)throw new DomainError('OPTION_UNAVAILABLE',`« ${option.name} » est momentanément indisponible.`,409);
+              if(linked.stockMode==='DIRECT'&&(!linked.stockItem||!linked.stockItem.active||linked.stockItem.quantity.lt(linked.stockQuantity)))throw new DomainError('OPTION_OUT_OF_STOCK',`« ${option.name} » est épuisé.`,409);
+              if(linkedPrice.currency!==body.currency)throw new DomainError('OPTION_CURRENCY_MISMATCH','La devise du supplément ne correspond pas à la commande.',409);
+              amount=Number(linkedPrice.amount);linkedStock={stockMode:linked.stockMode,stockItemId:linked.stockItemId,stockQuantity:linked.stockQuantity.toString()};
+            }
+            unitAmount+=amount;supplementsSnapshot.push({id:option.id,name:option.name,unitPrice:String(amount),currency:body.currency,quantity:1,...(option.linkedProductId?{linkedProductId:option.linkedProductId,linkedStock}:{})});
+          }
+        }
+        return { id:item?.id??null,product,menuItem:item,quantity:row.quantity,price:selected.price,unitAmount:String(unitAmount),variantSnapshot:{...(row.variant?{Accompagnement:row.variant}:{}),...variantSnapshot},supplementsSnapshot,productSnapshot:{name:product.name,menuVersionId:latest.id,clientCategoryCode:selected.code,priceVersionId:'priceVersionId' in selected.price?selected.price.priceVersionId:null,supplement:isSupplement} };
+      }));
+      const total = lines.reduce((sum,row)=>sum+Number(row.unitAmount)*row.quantity,0);
       if (!Number.isFinite(total)||total<=0) throw new DomainError('INVALID_AMOUNT','Le montant de la commande est invalide.',400);
-      const mealLine=lines.find(row=>row.product.sku==='JAMI-REPAS-COMPLET');
-      if(mealLine && (mealLine.quantity!==1 || body.currency!=='CDF')) throw new DomainError('MEAL_QUANTITY_INVALID','Un droit couvre un repas complet par commande, facturé en CDF.',400);
+      const mealLines=lines.filter(row=>row.product.sku==='JAMI-REPAS-COMPLET');
+      const mealLine=mealLines[0];
       let mealRightId:string|undefined;
       let covered=0;
-      if(mealLine && s.account.verificationStatus==='VERIFIED') {
+      if(mealLine && body.currency==='CDF' && s.account.verificationStatus==='VERIFIED') {
         const service=latest.menu.serviceCode;
         const date=latest.menu.businessDate;
         const matches=await tx.$queryRaw<Array<{id:string}>>`SELECT mr."id" FROM "MealRight" mr JOIN "Subscription" sub ON sub."id"=mr."subscriptionId" WHERE sub."clientId"=${s.account.clientId}::uuid AND mr."businessDate"=${date}::date AND mr."status"='AVAILABLE'::"MealRightStatus" AND sub."status" IN ('ACTIVE'::"SubscriptionStatus",'SCHEDULED'::"SubscriptionStatus") AND sub."startsOn"<=${date}::date AND sub."endsOn">=${date}::date AND sub."balance"<=0 AND (mr."serviceCode"=${service} OR (mr."serviceCode"='MAIN' AND ${service} IN ('LUNCH','DINNER'))) ORDER BY sub."startsOn" DESC LIMIT 1 FOR UPDATE OF mr SKIP LOCKED`;
         if(matches[0]) { mealRightId=matches[0].id; covered=Number(mealLine.price.amount); }
       }
       const payable=total-covered;
-      for (const row of lines) { if(!row.menuItem)continue;const updated=await tx.menuItem.updateMany({where:{id:row.menuItem.id,available:true,quantitySold:{lte:row.menuItem.quantityAvailable-row.quantity}},data:{quantitySold:{increment:row.quantity}}}); if(updated.count!==1)throw new DomainError('MENU_ITEM_UNAVAILABLE','La quantité disponible vient de changer.',409); }
-      const order = await tx.order.create({ data:{number:`WEB-${new Date().getFullYear()}-${randomBytes(5).toString('hex').toUpperCase()}`,clientId:s.account.clientId,clientIdempotencyKey:key,clientRequestHash:requestHash,menuVersionId:latest.id,serviceMode:body.serviceMode,businessDate:latest.menu.businessDate,totalAmount:payable,commercialTotal:total,coveredAmount:covered,mealRightId,currency:body.currency,paymentRequired:payable>0,items:{create:lines.map(row=>({productId:row.product.id,quantity:row.quantity,unitPrice:row.price.amount,lineTotal:String(Number(row.price.amount)*row.quantity),productSnapshot:{...row.productSnapshot,...(row.product.sku==='JAMI-REPAS-COMPLET'?{coveredAmount:covered,coveredBySubscription:covered>0}: {})}}))},statusHistory:{create:{toStatus:'RECEIVED'}}},select:{id:true,number:true,status:true,totalAmount:true,commercialTotal:true,coveredAmount:true,mealRightId:true,currency:true,createdAt:true} });
+      const menuQuantities=new Map<string,number>();for(const row of lines)if(row.menuItem)menuQuantities.set(row.menuItem.id,(menuQuantities.get(row.menuItem.id)??0)+row.quantity);
+      for(const [menuItemId,quantity] of menuQuantities){const menuItem=latest.items.find(value=>value.id===menuItemId)!;const updated=await tx.menuItem.updateMany({where:{id:menuItemId,available:true,quantityReserved:{lte:menuItem.quantityAvailable-menuItem.quantitySold-quantity}},data:{quantityReserved:{increment:quantity}}});if(updated.count!==1)throw new DomainError('MENU_ITEM_UNAVAILABLE','La quantité disponible vient de changer.',409);}
+      const order = await tx.order.create({ data:{number:`WEB-${new Date().getFullYear()}-${randomBytes(12).toString('hex').toUpperCase()}`,clientId:s.account.clientId,clientIdempotencyKey:key,clientRequestHash:requestHash,menuVersionId:latest.id,serviceMode:body.serviceMode,businessDate:latest.menu.businessDate,totalAmount:payable,commercialTotal:total,coveredAmount:covered,mealRightId,currency:body.currency,paymentRequired:payable>0,items:{create:lines.map(row=>({productId:row.product.id,quantity:row.quantity,unitPrice:row.unitAmount,lineTotal:String(Number(row.unitAmount)*row.quantity),productSnapshot:{...row.productSnapshot,...(row.product.sku==='JAMI-REPAS-COMPLET'?{coveredAmount:covered,coveredBySubscription:covered>0}: {})},variantsSnapshot:row.variantSnapshot,supplementsSnapshot:row.supplementsSnapshot as Prisma.InputJsonValue}))},statusHistory:{create:{toStatus:'RECEIVED'}}},select:{id:true,number:true,status:true,totalAmount:true,commercialTotal:true,coveredAmount:true,mealRightId:true,currency:true,createdAt:true} });
       if(mealRightId) {
         const held=await tx.mealRight.updateMany({where:{id:mealRightId,status:'AVAILABLE'},data:{status:'RESERVED',reservedAt:new Date()}});
         if(held.count!==1)throw new DomainError('MEAL_RIGHT_UNAVAILABLE','Votre droit vient d’être réservé dans une autre commande.',409);
         await tx.mealReservation.create({data:{mealRightId,orderId:order.id,reservedById:randomBytes(16).toString('hex').replace(/^(........)(....)(....)(....)(............)$/,'$1-$2-$3-$4-$5')}});
       }
-      await tx.clientPortalEvent.create({data:{accountId:s.accountId,action:'ORDER_CREATED',metadata:{orderId:order.id}}}); return {...order,lines:lines.map(row=>({name:row.product.name,commercialAmount:Number(row.price.amount)*row.quantity,coveredAmount:row.product.sku==='JAMI-REPAS-COMPLET'?covered:0,amountDue:Number(row.price.amount)*row.quantity-(row.product.sku==='JAMI-REPAS-COMPLET'?covered:0),supplement:row.product.category.code==='SUPPLEMENT'}))};
+      await tx.clientPortalEvent.create({data:{accountId:s.accountId,action:'ORDER_CREATED',metadata:{orderId:order.id}}}); return {...order,lines:lines.map(row=>({name:row.product.name,commercialAmount:Number(row.unitAmount)*row.quantity,coveredAmount:row.product.sku==='JAMI-REPAS-COMPLET'?covered:0,amountDue:Number(row.unitAmount)*row.quantity-(row.product.sku==='JAMI-REPAS-COMPLET'?covered:0),supplement:row.product.category.code==='SUPPLEMENT'}))};
     });
     return { success: true, data: result };
   }

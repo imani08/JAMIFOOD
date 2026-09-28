@@ -5,6 +5,7 @@ import { useState } from 'react';
 import {
   api,
   apiForm,
+  apiDelete,
   date,
 } from '../../lib/api';
 
@@ -30,6 +31,7 @@ type MenuItem = {
   productId: string;
   quantityAvailable: number;
   quantitySold: number;
+  quantityReserved: number;
   available: boolean;
   position: number;
   variants: string[] | null;
@@ -57,6 +59,19 @@ type Menu = {
   serviceCode: string;
   versions: MenuVersion[];
 };
+
+function ProductOptionsEditor({ product, products }: { product: Product; products: Product[] }) {
+  const action = useAction();
+  const groups = useData<Array<{id:string;name:string;type:'VARIANT'|'SUPPLEMENT';required:boolean;minSelections:number;maxSelections:number;active:boolean}>>(`/menus/products/${product.id}/option-groups`);
+  const [name,setName]=useState('');const [type,setType]=useState<'VARIANT'|'SUPPLEMENT'>('VARIANT');const [required,setRequired]=useState(false);const [min,setMin]=useState(0);const [max,setMax]=useState(1);
+  const [rows,setRows]=useState<Array<{name:string;priceDelta:string;currency:'CDF'|'USD';linkedProductId:string}>>([{name:'',priceDelta:'0',currency:'CDF',linkedProductId:''}]);
+  async function save(event:React.FormEvent<HTMLFormElement>){event.preventDefault();const options=rows.filter(row=>row.name.trim()).map((row,position)=>({...row,position,...(row.linkedProductId?{linkedProductId:row.linkedProductId}:{})}));const result=await action.run(()=>api(`/menus/products/${product.id}/option-groups`,{name,type,required,minSelections:min,maxSelections:max,options}),'Options enregistrées.');if(result){setName('');setRows([{name:'',priceDelta:'0',currency:'CDF',linkedProductId:''}]);}}
+  return <section className="card section"><h3>Personnalisation · {product.name}</h3><p className="muted small">Les variantes sont incluses. Les suppléments peuvent utiliser le prix et le stock d’un produit lié.</p><Feedback error={action.error} notice={action.notice}/><div className="list">{groups.data?.filter(group=>group.active).map(group=><div className="item" key={group.id}><span className="badge">{group.type==='VARIANT'?'Variante':'Supplément'} · {group.name} · {group.minSelections}–{group.maxSelections}</span><button className="secondary" type="button" onClick={()=>action.run(()=>apiDelete(`/menus/option-groups/${group.id}`),'Groupe archivé.')}>Archiver</button></div>)}</div><form onSubmit={save} className="section"><div className="form-grid"><label>Nom du groupe<input value={name} onChange={e=>setName(e.target.value)} placeholder="Accompagnement" required/></label><label>Type<select value={type} onChange={e=>setType(e.target.value as 'VARIANT'|'SUPPLEMENT')}><option value="VARIANT">Variante incluse</option><option value="SUPPLEMENT">Supplément</option></select></label><label>Minimum de choix<input type="number" min="0" max="20" value={min} onChange={e=>setMin(Number(e.target.value))}/></label><label>Maximum de choix<input type="number" min="1" max="20" value={max} onChange={e=>setMax(Number(e.target.value))}/></label></div><label><span><input type="checkbox" checked={required} onChange={e=>setRequired(e.target.checked)}/> Choix obligatoire</span></label>{rows.map((row,index)=><div className="form-grid" key={index}><label>Option<input value={row.name} onChange={e=>setRows(current=>current.map((v,i)=>i===index?{...v,name:e.target.value}:v))} placeholder="Foufou"/></label><label>Prix supplémentaire<input type="number" min="0" step="0.01" value={row.priceDelta} onChange={e=>setRows(current=>current.map((v,i)=>i===index?{...v,priceDelta:e.target.value}:v))} disabled={type==='VARIANT'||!!row.linkedProductId}/></label><label>Devise<select value={row.currency} onChange={e=>setRows(current=>current.map((v,i)=>i===index?{...v,currency:e.target.value as 'CDF'|'USD'}:v))}><option>CDF</option><option>USD</option></select></label><label>Produit lié (prix et stock)<select value={row.linkedProductId} onChange={e=>setRows(current=>current.map((v,i)=>i===index?{...v,linkedProductId:e.target.value}:v))}><option value="">Prix fixe du supplément</option>{products.filter(p=>p.id!==product.id&&p.active).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label></div>)}<div className="actions"><button className="secondary" type="button" onClick={()=>setRows(current=>[...current,{name:'',priceDelta:'0',currency:'CDF',linkedProductId:''}])}>Ajouter une option</button><button className="primary" disabled={action.busy||!name.trim()||rows.every(row=>!row.name.trim())}>Enregistrer le groupe</button></div></form></section>;
+}
+
+function productImageUrl(value: string | null | undefined) {
+  return value && /^\/api\/v1\/product-images\/[a-f0-9-]+\.(?:jpg|png|webp)$/i.test(value) ? value : null;
+}
 
 function kinshasaToday() {
   const parts =
@@ -136,6 +151,19 @@ function VersionEditor({
     duplicateService,
     setDuplicateService,
   ] = useState('LUNCH');
+
+  const [versionImage, setVersionImage] = useState<File | null>(null);
+
+  async function saveImage() {
+    if (!versionImage) return;
+    const result = await action.run(async () => {
+      const form = new FormData();
+      form.append('image', versionImage);
+      const uploaded = await apiForm<{ url: string }>('/menus/menu-images', form);
+      return api(`/menus/versions/${version.id}/image`, { imageUrl: uploaded.url });
+    }, 'Image du menu enregistrée.');
+    if (result) setVersionImage(null);
+  }
 
   async function addItem(
     event:
@@ -266,6 +294,20 @@ function VersionEditor({
         </p>
       )}
 
+      {version.imageUrl && (
+        <img src={version.imageUrl} alt={`Image du menu, version ${version.version}`} style={{ display: 'block', width: '100%', maxHeight: 280, objectFit: 'cover', borderRadius: 12, margin: '14px 0' }} />
+      )}
+
+      {version.status === 'DRAFT' && (
+        <div className="actions">
+          <label>
+            Image du menu
+            <input type="file" accept="image/jpeg,image/png,image/webp" onChange={event => setVersionImage(event.target.files?.[0] ?? null)} />
+          </label>
+          <button type="button" className="secondary" disabled={action.busy || !versionImage} onClick={saveImage}>Enregistrer l’image</button>
+        </div>
+      )}
+
       <div className="table-wrap">
         <table>
           <thead>
@@ -287,7 +329,8 @@ function VersionEditor({
                   Math.max(
                     0,
                     item.quantityAvailable -
-                      item.quantitySold,
+                    item.quantitySold +
+                    item.quantityReserved,
                   );
 
                 return (
@@ -295,6 +338,7 @@ function VersionEditor({
                     key={item.id}
                   >
                     <td>
+                      <img src={productImageUrl(item.product.imageUrl) ?? '/products/placeholder.svg'} alt="" width={52} height={44} style={{ display: 'block', objectFit: 'cover', borderRadius: 7, marginBottom: 6 }} />
                       <strong>
                         {
                           item.product
@@ -506,6 +550,13 @@ function VersionEditor({
         </form>
       )}
 
+      {productId && products.length > 0 && (
+        <ProductOptionsEditor
+          product={products.find(product => product.id === productId)!}
+          products={products}
+        />
+      )}
+
       <form
         className="section"
         onSubmit={duplicate}
@@ -605,21 +656,30 @@ export default function Menus() {
 
     const result =
       await action.run(
-        () =>
-          api('/menus', {
+        async () => {
+          let imageUrl: string | undefined;
+          if (menuImage) {
+            const form = new FormData();
+            form.append('image', menuImage);
+            imageUrl = (await apiForm<{ url: string }>('/menus/menu-images', form)).url;
+          }
+          return api('/menus', {
             businessDate:
               selectedDate,
 
             serviceCode,
 
             notes,
-          }),
+            ...(imageUrl ? { imageUrl } : {}),
+          });
+        },
 
         'Brouillon créé.',
       );
 
     if (result) {
       setNotes('');
+      setMenuImage(null);
     }
   }
 

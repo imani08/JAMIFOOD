@@ -21,7 +21,7 @@ import {
 import { resolve } from 'node:path';
 import sharp from 'sharp';
 
-import { Require } from './auth';
+import { Public, Require } from './auth';
 import { DomainError } from './http';
 import type { Response } from './transport';
 
@@ -76,6 +76,26 @@ export class ProductImagesController {
     @UploadedFile()
     file: ProductImageFile | undefined,
   ) {
+    return this.store(file);
+  }
+
+  @Require('menus.manage')
+  @Post('menus/menu-images')
+  @UseInterceptors(
+    FileInterceptor('image', {
+      limits: {
+        files: 1,
+        fileSize: 5 * 1024 * 1024,
+      },
+    }),
+  )
+  async uploadMenuImage(
+    @UploadedFile() file: ProductImageFile | undefined,
+  ) {
+    return this.store(file);
+  }
+
+  private async store(file: ProductImageFile | undefined) {
     if (!file) {
       throw new DomainError(
         'PRODUCT_IMAGE_REQUIRED',
@@ -137,7 +157,7 @@ export class ProductImagesController {
     };
   }
 
-  @Require('auth.session')
+  @Public()
   @Get('product-images/:filename')
   async image(
     @Param('filename') filename: string,
@@ -188,7 +208,7 @@ export class ProductImagesController {
 
     response.setHeader(
       'Cache-Control',
-      'private, max-age=86400',
+      'public, max-age=86400, immutable',
     );
 
     return new StreamableFile(

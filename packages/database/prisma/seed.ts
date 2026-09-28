@@ -210,7 +210,14 @@ for (const [username, roleCode] of demoUsers) {
   await db.exchangeRate.upsert({where:{baseCurrency_quoteCurrency_effectiveFrom:{baseCurrency:'USD',quoteCurrency:'CDF',effectiveFrom:new Date('2026-01-01')}},update:{},create:{baseCurrency:'USD',quoteCurrency:'CDF',rate:'2500',effectiveFrom:new Date('2026-01-01'),source:'DEMO — taux fictif de recette R07',status:'ACTIVE',createdById:admin.id}});
   await db.cashRegister.upsert({where:{code:'DEMO-TPE-01'},update:{},create:{code:'DEMO-TPE-01',label:'Terminal de caisse DEMO'}});
   for(const [code,label] of [['DENREES','Denrées'],['GAZ','Gaz'],['TRANSPORT','Transport'],['PERSONNEL','Personnel'],['ENTRETIEN','Entretien'],['EMBALLAGES','Emballages'],['EAU','Eau'],['ELECTRICITE','Électricité']]) await db.expenseCategory.upsert({where:{code},update:{},create:{code,label}});
-  for(const [key,value] of [['calendrier',{note:'Jours et services à valider en production'}],['livraison',{note:'Zones, frais et horaires à valider'}],['acompte',{enabled:false}],['report',{enabled:false}],['flex',{enabled:false}],['tpe',{note:'Modèle et fournisseur à confirmer'}]]) await db.setting.upsert({where:{key:key as string},update:{},create:{key:key as string,value}});
+  for(const [key,value] of [
+    ['calendrier',{weekdays:[1,2,3,4,5],publicHolidays:'CD_LEGAL',closures:[]}],
+    ['livraison',{enabled:false,zones:[]}],
+    ['acompte',{enabled:false}],
+    ['report',{enabled:false}],
+    ['flex',{enabled:false}],
+    ['tpe',{mode:'MANUAL',provider:null,realTerminalConnected:false}],
+  ]) await db.setting.upsert({where:{key:key as string},update:{},create:{key:key as string,value}});
   for(const [code,name,unit] of [['RIZ','Riz','kg'],['HUILE','Huile','litre'],['EAU','Bouteille d’eau','pièce']]) await db.stockItem.upsert({where:{code},update:{},create:{code,name,unit,alertThreshold:'5'}});
 }
 main().finally(()=>db.$disconnect());

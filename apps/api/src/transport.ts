@@ -3,6 +3,8 @@ import type { IncomingHttpHeaders } from 'node:http';
 export interface Request {
   headers: IncomingHttpHeaders;
   method: string;
+  url?: string;
+  route?: { path?: string };
 }
 export interface CookieOptions { httpOnly?: boolean; secure?: boolean; sameSite?: 'strict' | 'lax' | 'none'; path?: string; maxAge?: number }
 export interface Response {

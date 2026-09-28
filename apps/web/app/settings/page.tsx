@@ -127,6 +127,24 @@ function SettingEditor({
         {date(setting.updatedAt)}
       </p>
 
+      {setting.key === 'calendrier' && (
+        <div className="section">
+          <p>Jours de service : lundi à vendredi. Les jours fériés légaux RDC sont exclus automatiquement.</p>
+          <label>
+            Fermetures exceptionnelles (une date AAAA-MM-JJ par ligne)
+            <textarea
+              value={Array.isArray(setting.value.closures) ? (setting.value.closures as string[]).join('\n') : ''}
+              onChange={(event) => {
+                const closures = event.target.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+                setText(JSON.stringify({ weekdays: [1, 2, 3, 4, 5], publicHolidays: 'CD_LEGAL', closures }, null, 2));
+              }}
+              placeholder="2026-12-24"
+            />
+          </label>
+          <p className="muted small">Les jours fériés légaux de la RDC sont exclus automatiquement du calendrier.</p>
+        </div>
+      )}
+
       <label>
         Configuration
         <textarea

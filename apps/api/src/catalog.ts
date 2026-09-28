@@ -30,7 +30,7 @@ import {
   Tx,
 } from './transaction';
 import { DomainError } from './http';
-import { localDate } from '@jami/shared';
+import { localDate, serviceEndDate, serviceRightDates } from '@jami/shared';
 
 const codeSchema = z
   .string()
@@ -159,6 +159,99 @@ const settingValueSchema = z.record(
   z.string(),
   z.unknown(),
 );
+
+const calendarSettingSchema = z.object({
+  weekdays: z.array(z.number().int().min(1).max(5)).length(5).refine(days => [1, 2, 3, 4, 5].every(day => days.includes(day))),
+  publicHolidays: z.literal('CD_LEGAL'),
+  closures: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(date => {
+    const parsed = new Date(`${date}T00:00:00.000Z`);
+    return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
+  })).max(500),
+}).strict();
+
+const settingsRequiringConfiguration: Record<string, z.ZodTypeAny> = {
+  calendrier: calendarSettingSchema,
+  acompte: z.object({ enabled: z.boolean() }).passthrough(),
+  flex: z.object({ enabled: z.boolean() }).passthrough(),
+  report: z.object({ enabled: z.boolean() }).passthrough(),
+  livraison: z.object({ enabled: z.boolean(), zones: z.array(z.object({ name: z.string().min(1), fee: z.number().nonnegative() })).optional() }).passthrough(),
+  tpe: z.object({ mode: z.enum(['MANUAL', 'INTEGRATED']), provider: z.string().nullable(), realTerminalConnected: z.boolean() }).passthrough(),
+};
+
+const calendarSubscriptionSnapshotSchema = z.object({
+  durationDays: z.number().int().min(1).max(366),
+  eligibleDays: z.array(z.number().int().min(0).max(6)).min(1),
+  services: z.array(z.enum(['BREAKFAST', 'LUNCH', 'DINNER', 'MAIN'])).min(1),
+  quotaRules: z.object({
+    serviceQuotas: z.record(z.enum(['BREAKFAST', 'LUNCH', 'DINNER', 'MAIN']), z.number().int().min(1).max(10)).optional(),
+  }).passthrough(),
+}).passthrough();
+
+async function reconcileOpenSubscriptionsForCalendar(tx: Tx, closures: string[], actorId: string) {
+  const today = localDate();
+  const subscriptions = await tx.subscription.findMany({
+    where: {
+      status: { in: ['PENDING_PAYMENT', 'SCHEDULED', 'ACTIVE'] },
+      endsOn: { gte: new Date(today) },
+    },
+    include: { rights: true },
+    orderBy: [{ clientId: 'asc' }, { startsOn: 'asc' }],
+  });
+
+  const adjustments = subscriptions.map(subscription => {
+    const snapshot = calendarSubscriptionSnapshotSchema.safeParse(subscription.serviceSnapshot);
+    if (!snapshot.success) throw new DomainError('CALENDAR_SUBSCRIPTION_SNAPSHOT_INVALID', 'Un abonnement actif a un instantané incomplet; le calendrier ne peut pas être appliqué sans risque.', 409);
+    const startsOn = subscription.startsOn.toISOString().slice(0, 10);
+    const endsOn = serviceEndDate(startsOn, snapshot.data.durationDays, closures);
+    const serviceDates = serviceRightDates(startsOn, endsOn, snapshot.data.eligibleDays, closures).filter(date => date >= today);
+    const desired = serviceDates.flatMap(date => snapshot.data.services.flatMap(service => {
+      const quota = snapshot.data.quotaRules.serviceQuotas?.[service] ?? 1;
+      return Array.from({ length: quota }, (_, index) => ({
+        businessDate: new Date(`${date}T00:00:00.000Z`),
+        serviceCode: service,
+        quotaGroup: quota === 1 ? service : `${service}:${index + 1}`,
+      }));
+    }));
+    return { subscription, endsOn, desired };
+  });
+
+  const previousEndByClient = new Map<string, string>();
+  for (const entry of adjustments) {
+    const start = entry.subscription.startsOn.toISOString().slice(0, 10);
+    const previousEnd = previousEndByClient.get(entry.subscription.clientId);
+    if (previousEnd && start <= previousEnd) throw new DomainError('CALENDAR_SUBSCRIPTION_OVERLAP', 'Cette fermeture prolongerait un abonnement sur le suivant. Décalez d’abord la date de début du renouvellement concerné.', 409);
+    previousEndByClient.set(entry.subscription.clientId, entry.endsOn);
+  }
+
+  let adjusted = 0;
+  for (const { subscription, endsOn, desired } of adjustments) {
+    const desiredKeys = new Set(desired.map(right => `${right.businessDate.toISOString().slice(0, 10)}|${right.serviceCode}|${right.quotaGroup}`));
+    const futureRights = subscription.rights.filter(right => right.businessDate.toISOString().slice(0, 10) >= today);
+    const invalidated = futureRights.filter(right => !desiredKeys.has(`${right.businessDate.toISOString().slice(0, 10)}|${right.serviceCode}|${right.quotaGroup}`));
+    if (invalidated.some(right => right.status === 'RESERVED' || right.status === 'CONSUMED')) throw new DomainError('CALENDAR_RESERVED_RIGHT', 'Une fermeture touche un repas déjà réservé; annulez ou traitez cette réservation avant de valider le calendrier.', 409);
+
+    const invalidatedIds = invalidated.filter(right => right.status === 'AVAILABLE').map(right => right.id);
+    if (invalidatedIds.length) await tx.mealRight.updateMany({ where: { id: { in: invalidatedIds }, status: 'AVAILABLE' }, data: { status: 'CANCELLED' } });
+    const restoredIds = futureRights.filter(right => right.status === 'CANCELLED' && desiredKeys.has(`${right.businessDate.toISOString().slice(0, 10)}|${right.serviceCode}|${right.quotaGroup}`)).map(right => right.id);
+    if (restoredIds.length) await tx.mealRight.updateMany({ where: { id: { in: restoredIds }, status: 'CANCELLED' }, data: { status: 'AVAILABLE' } });
+    await tx.mealRight.createMany({ data: desired.map(right => ({ ...right, subscriptionId: subscription.id })), skipDuplicates: true });
+
+    const nextEndsOn = new Date(`${endsOn}T00:00:00.000Z`);
+    if (subscription.endsOn.toISOString().slice(0, 10) !== endsOn) {
+      await tx.subscription.update({ where: { id: subscription.id }, data: { endsOn: nextEndsOn } });
+      await tx.auditLog.create({ data: {
+        actorId,
+        action: 'SUBSCRIPTION_CALENDAR_ADJUSTED',
+        entityType: 'Subscription',
+        entityId: subscription.id,
+        oldValue: { endsOn: subscription.endsOn.toISOString().slice(0, 10) },
+        newValue: { endsOn, reason: 'CALENDAR_VALIDATED' },
+      } });
+      adjusted++;
+    }
+  }
+  return adjusted;
+}
 
 function jsonValue(
   value: unknown,
@@ -1462,6 +1555,17 @@ const product =
           );
         }
 
+        const validator = settingsRequiringConfiguration[key];
+        if (validator && !validator.safeParse(before.value).success) {
+          throw new DomainError('SETTING_CONFIGURATION_INVALID', `Le réglage « ${key} » doit d’abord contenir une configuration complète.`, 409);
+        }
+
+        let adjustedSubscriptions = 0;
+        if (key === 'calendrier') {
+          const calendar = calendarSettingSchema.parse(before.value);
+          adjustedSubscriptions = await reconcileOpenSubscriptionsForCalendar(tx, calendar.closures, req.actor.id);
+        }
+
         const setting =
           await tx.setting.update({
             where: { key },
@@ -1501,6 +1605,7 @@ const product =
             },
             newValue: {
               validated: true,
+              ...(key === 'calendrier' ? { adjustedSubscriptions } : {}),
             },
           },
         });

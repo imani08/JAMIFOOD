@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
   Param,
@@ -20,6 +21,7 @@ import {
 
 import { DomainError } from './http';
 import { PrismaService } from './prisma.service';
+import { isServiceDay } from '@jami/shared';
 
 import {
   audit,
@@ -61,7 +63,7 @@ const createMenuSchema = z
     imageUrl: z
   .string()
   .trim()
-  .max(500)
+  .regex(/^\/api\/v1\/product-images\/[0-9a-f-]{36}\.(jpg|png|webp)$/i)
   .optional(),
   })
   .strict();
@@ -162,6 +164,32 @@ export class MenusController {
     private readonly db: PrismaService,
   ) {}
 
+  @Require('menus.write')
+  @Get('products/:productId/option-groups')
+  async productOptionGroups(@Param('productId') productId: string) {
+    const id = uuid.parse(productId);
+    const groups = await this.db.productOptionGroup.findMany({ where: { productId: id }, orderBy: { position: 'asc' }, include: { options: { orderBy: { position: 'asc' } } } });
+    return { success: true, data: groups };
+  }
+
+  @Require('menus.write')
+  @Post('products/:productId/option-groups')
+  async createProductOptionGroup(@Param('productId') productId: string, @Body() input: unknown) {
+    const id = uuid.parse(productId);
+    const body = z.object({ name: z.string().trim().min(1).max(80), type: z.enum(['VARIANT','SUPPLEMENT']), required: z.boolean().default(false), minSelections: z.number().int().min(0).max(20), maxSelections: z.number().int().min(1).max(20), position: z.number().int().min(0).default(0), options: z.array(z.object({ name: z.string().trim().min(1).max(80), linkedProductId: uuid.optional(), priceDelta: z.string().regex(/^\d+(?:\.\d{1,2})?$/).default('0'), currency: z.enum(['CDF','USD']).default('CDF'), position: z.number().int().min(0).default(0) }).strict()).min(1).max(50) }).strict().refine(value=>value.maxSelections>=value.minSelections,'Le maximum doit être supérieur ou égal au minimum').parse(input);
+    if (body.type === 'VARIANT' && body.options.some(option=>option.linkedProductId||Number(option.priceDelta)!==0)) throw new DomainError('VARIANT_PRICE_INVALID','Une variante incluse ne peut pas avoir de supplément payant.',400);
+    const group = await this.db.productOptionGroup.create({ data: { productId: id, name: body.name, type: body.type, required: body.required, minSelections: body.minSelections, maxSelections: body.maxSelections, position: body.position, options: { create: body.options } }, include: { options: { orderBy: { position: 'asc' } } } });
+    return { success: true, data: group };
+  }
+
+  @Require('menus.write')
+  @Delete('option-groups/:groupId')
+  async archiveProductOptionGroup(@Param('groupId') groupId: string) {
+    const id = uuid.parse(groupId);
+    await this.db.productOptionGroup.update({ where: { id }, data: { active: false, options: { updateMany: { where: {}, data: { active: false } } } } });
+    return { success: true, data: { id, active: false } };
+  }
+
   @Public()
   @Get('commercial-offers')
   async commercialOffers() {
@@ -207,16 +235,22 @@ export class MenusController {
     });
     const version = menu?.versions[0];
     if (!menu || !version) return { success: true, data: null };
+    const optionGroups = await this.db.productOptionGroup.findMany({ where: { productId: { in: version.items.map(item => item.productId) }, active: true }, orderBy: { position: 'asc' }, include: { options: { where: { active: true }, orderBy: { position: 'asc' } } } });
+    const linkedIds = [...new Set(optionGroups.flatMap(group => group.options.flatMap(option => option.linkedProductId ? [option.linkedProductId] : [])))];
+    const linkedProducts = linkedIds.length ? await this.db.product.findMany({ where: { id: { in: linkedIds }, active: true, available: true }, include: { stockItem: true, prices: { where: { categoryCode: category }, include: { versions: { where: { status: 'ACTIVE', effectiveFrom: { lte: new Date() }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: new Date() } }] }, orderBy: { effectiveFrom: 'desc' }, take: 1 } } } } }) : [];
+    const linkedById = new Map(linkedProducts.map(product => [product.id, product]));
+    const optionsByProduct = new Map<string, typeof optionGroups>();
+    for (const group of optionGroups) optionsByProduct.set(group.productId, [...(optionsByProduct.get(group.productId) ?? []), group]);
     const items = version.items.flatMap(item => {
-      const remaining = Math.max(0, item.quantityAvailable - item.quantitySold);
+      const remaining = Math.max(0, item.quantityAvailable - item.quantitySold - item.quantityReserved);
       if (!remaining || !item.product.active || !item.product.available) return [];
       const snapshot = item.priceSnapshot as { categories?: Record<string, { amount: string; currency: string }> } | null;
       const price = snapshot?.categories?.[category];
       if (!price) return [];
       const product = item.productSnapshot as { name?: string; imageUrl?: string; description?: string } | null;
-      return [{ id: item.productId, name: product?.name ?? item.product.name, imageUrl: product?.imageUrl ?? item.product.imageUrl, description: product?.description ?? item.product.description, variants: item.variants, remaining, price: { amount: price.amount, currency: price.currency } }];
+      return [{ id: item.productId, name: product?.name ?? item.product.name, imageUrl: product?.imageUrl ?? item.product.imageUrl, description: product?.description ?? item.product.description, variants: item.variants, optionGroups: (optionsByProduct.get(item.productId)??[]).map(group => ({ id: group.id, name: group.name, type: group.type, required: group.required, minSelections: group.minSelections, maxSelections: group.maxSelections, options: group.options.flatMap(option => { const linked=linkedById.get(option.linkedProductId??'');if(option.linkedProductId&&(!linked||!linked.prices[0]?.versions[0]||(linked.stockMode==='DIRECT'&&(!linked.stockItem||!linked.stockItem.active||linked.stockItem.quantity.lt(linked.stockQuantity)))))return [];return [{ id: option.id, name: option.name, priceDelta: linked?.prices[0]?.versions[0]?.amount.toString() ?? option.priceDelta.toString(), currency: linked?.prices[0]?.versions[0]?.currency ?? option.currency, linkedProductId: option.linkedProductId }]; }) })), remaining, price: { amount: price.amount, currency: price.currency } }];
     });
-    return { success: true, data: { businessDate, serviceCode, version: version.version, menuVersionId: version.id, items } };
+    return { success: true, data: { businessDate, serviceCode, version: version.version, menuVersionId: version.id, imageUrl: version.imageUrl, items } };
   }
 
   @Require('menus.read')
@@ -367,6 +401,7 @@ export class MenusController {
       version: nextVersion,
       notes:
         body.notes || null,
+      imageUrl: body.imageUrl,
       createdById:
         req.actor.id,
     },
@@ -396,6 +431,26 @@ export class MenusController {
       success: true,
       data,
     }));
+  }
+
+  @Require('menus.manage')
+  @Post('versions/:versionId/image')
+  setImage(
+    @Param('versionId') versionId: string,
+    @Body() input: unknown,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() req: AuthRequest,
+  ) {
+    uuid.parse(versionId);
+    const body = z.object({
+      imageUrl: z.string().trim().regex(/^\/api\/v1\/product-images\/[0-9a-f-]{36}\.(jpg|png|webp)$/i),
+    }).strict().parse(input);
+    return mutate(this.db, 'menu.image.update', key, req.actor.id, { versionId, ...body }, async tx => {
+      await requireDraft(tx, versionId);
+      const version = await tx.menuVersion.update({ where: { id: versionId }, data: { imageUrl: body.imageUrl } });
+      await audit(tx, req.actor.id, 'MENU_IMAGE_UPDATED', 'MenuVersion', version.id, json({ imageUrl: body.imageUrl }));
+      return version;
+    }).then(data => ({ success: true, data }));
   }
 
   // ============================================================
@@ -686,6 +741,18 @@ export class MenusController {
             'Le calendrier commercial doit être validé avant de publier un menu.',
             409,
           );
+        }
+
+        const calendarRules = z.object({
+          weekdays: z.array(z.number().int().min(1).max(5)).min(1),
+          closures: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).default([]),
+        }).passthrough().safeParse(calendar.value);
+        if (!calendarRules.success || calendarRules.data.weekdays.length !== 5 || ![1, 2, 3, 4, 5].every(day => calendarRules.data.weekdays.includes(day))) {
+          throw new DomainError('CALENDAR_INVALID', 'Configurez et enregistrez les jours ouvrés du lundi au vendredi avant de publier.', 409);
+        }
+        const publicationDate = version.menu.businessDate.toISOString().slice(0, 10);
+        if (!isServiceDay(publicationDate, calendarRules.data.closures)) {
+          throw new DomainError('CALENDAR_CLOSED', 'Un menu ne peut pas être publié pour un week-end, un jour férié légal ou une fermeture exceptionnelle.', 409);
         }
 
         const items =
@@ -1029,6 +1096,8 @@ export class MenusController {
               notes:
                 `Copie de la version ${source.version}`,
 
+              imageUrl: source.imageUrl,
+
               createdById:
                 req.actor.id,
 
@@ -1043,6 +1112,7 @@ export class MenusController {
                         item.quantityAvailable,
 
                       quantitySold: 0,
+                      quantityReserved: 0,
 
                       available: true,
 
@@ -1182,7 +1252,8 @@ export class MenusController {
             Math.max(
               0,
               item.quantityAvailable -
-                item.quantitySold,
+                item.quantitySold -
+                item.quantityReserved,
             );
 
           if (
@@ -1251,6 +1322,9 @@ export class MenusController {
 
               quantitySold:
                 item.quantitySold,
+
+              quantityReserved:
+                item.quantityReserved,
 
               remaining,
 

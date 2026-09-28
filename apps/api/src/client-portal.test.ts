@@ -1,8 +1,31 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { ClientPortalService } from './client-portal';
+import { ClientPortalService, clientCreateOrderSchema, clientOrderReplay } from './client-portal';
 
 const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
+describe('client order customization input',()=>{
+  const menuVersionId='11111111-1111-4111-8111-111111111111';const meal='22222222-2222-4222-8222-222222222222';const optionGroup='33333333-3333-4333-8333-333333333333';
+  it('accepts duplicate products as separate customized lines and simple products without options',()=>{
+    const parsed=clientCreateOrderSchema.parse({menuVersionId,serviceMode:'TAKEAWAY',currency:'CDF',items:[{productId:meal,quantity:1,variant:'Riz'},{productId:meal,quantity:1,variant:'Frites',optionSelections:[{groupId:optionGroup,optionIds:[]}]}]});
+    expect(parsed.items).toHaveLength(2);expect(parsed.items[0].variant).toBe('Riz');expect(parsed.items[1].variant).toBe('Frites');
+    expect(clientCreateOrderSchema.parse({menuVersionId,serviceMode:'TAKEAWAY',currency:'CDF',items:[{productId:meal,quantity:1}]}).items[0].optionSelections).toBeUndefined();
+  });
+  it('accepts the reported meal plus two-portion TAKEAWAY basket shape',()=>{
+    const parsed=clientCreateOrderSchema.parse({menuVersionId,serviceMode:'TAKEAWAY',currency:'CDF',items:[{productId:meal,quantity:1},{productId:'44444444-4444-4444-8444-444444444444',quantity:2}]});
+    expect(parsed.items.map(item=>item.quantity)).toEqual([1,2]);
+  });
+});
+describe('client order idempotency replay',()=>{
+  const previous={id:'order-1',clientId:'client-1',clientRequestHash:'hash-a',number:'WEB-2026-A',status:'RECEIVED',totalAmount:'9000',commercialTotal:'9000',coveredAmount:'0',mealRightId:null,currency:'CDF',createdAt:new Date('2026-09-28T10:00:00Z'),items:[{quantity:1,lineTotal:'9000',productSnapshot:{name:'Repas',supplement:false}}]};
+  it('returns the saved order response for the same client and payload hash',()=>{
+    const first=clientOrderReplay(previous,'client-1','hash-a');const retry=clientOrderReplay(previous,'client-1','hash-a');
+    expect(retry).toEqual(first);expect(retry.number).toBe('WEB-2026-A');expect(retry.lines).toEqual([{name:'Repas',commercialAmount:9000,coveredAmount:0,amountDue:9000,supplement:false}]);
+  });
+  it('rejects a changed payload or another client using the same key',()=>{
+    expect(()=>clientOrderReplay(previous,'client-1','hash-b')).toThrowError(expect.objectContaining({code:'IDEMPOTENCY_KEY_REUSED'}));
+    expect(()=>clientOrderReplay(previous,'client-2','hash-a')).toThrowError(expect.objectContaining({code:'IDEMPOTENCY_KEY_REUSED'}));
+  });
+});
 function authHarness(){
   let authToken:{id:string;accountId:string;purpose:string;tokenHash:string;expiresAt:Date;usedAt:Date|null;createdAt:Date;account?:{clientId:string}}|null=null;
   const accountUpdate=vi.fn();const sessionDelete=vi.fn();
