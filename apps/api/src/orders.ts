@@ -8,6 +8,9 @@ import { PrismaService } from './prisma.service';
 import { DomainError } from './http';
 import { netPaymentReceived } from './refund-value';
 import { move } from './stock';
+import { confirmOrderAndIssueKitchenTicket } from './kitchen-ticket';
+import { consumeReservedMealRight } from './meal-consumption';
+import { courierCanAccept, effectiveCourierAvailability, rankCouriers } from './courier-availability';
 import { AuthRequest, Require } from './auth';
 import {
   subscriptionLifecycleStatus,
@@ -176,65 +179,7 @@ export async function finishPayment(tx: Tx, paymentId: string, actorId: string) 
     const quantities=new Map<string,Prisma.Decimal>();
     for(const item of [...direct,...linkedSupplements])quantities.set(item.stockItemId,(quantities.get(item.stockItemId)??new Decimal(0)).add(item.quantity.mul(item.stockQuantity)));
     for(const [stockId,quantity] of [...quantities].sort(([a],[b])=>a.localeCompare(b)))await move(tx,stockId,quantity.negated(),'DIRECT_SALE',order.id,'Vente validée : '+order.number,actorId);
-    await tx.order.update({
-      where: {
-        id: order.id,
-      },
-
-      data: {
-        status: 'CONFIRMED',
-
-        statusHistory: {
-          create: {
-            fromStatus:
-              'RECEIVED',
-
-            toStatus:
-              'CONFIRMED',
-
-            actorId,
-          },
-        },
-
-        kitchenTicket: {
-          create: {
-            number:
-              'K-' +
-              order.number,
-
-            renderedSnapshot: {
-              orderNumber:
-                order.number,
-
-              paymentStatus:
-                'CONFIRMED',
-
-              serviceMode:
-                order.serviceMode,
-            },
-
-            items: {
-              create:
-                order.items.map(
-                  (item) => ({
-                    quantity:
-                      item.quantity,
-
-                    preparationSnapshot:
-                      {
-                        name: (
-                          item.productSnapshot as {
-                            name: string;
-                          }
-                        ).name,
-                      },
-                  }),
-                ),
-            },
-          },
-        },
-      },
-    });
+    await confirmOrderAndIssueKitchenTicket(tx, order, actorId);
 
     await audit(
       tx,
@@ -1354,11 +1299,9 @@ const refundable =
         );
       }
       if(status === 'OUT_FOR_DELIVERY') {
-        const client = order.clientId ? await tx.client.findUnique({where:{id:order.clientId}}) : null;
         const assigned = await tx.delivery.findUnique({where:{orderId:id}});
-        if (assigned && assigned.courierId !== actorId) throw new DomainError('FORBIDDEN','Cette livraison est affectée à un autre livreur.',403);
-        if (assigned) await tx.delivery.update({where:{id:assigned.id},data:{status:'OUT_FOR_DELIVERY'}});
-        else await tx.delivery.create({data:{orderId:id,courierId:actorId,status:'OUT_FOR_DELIVERY',assignedAt:new Date(),addressSnapshot:{residency:client?.residency ?? '',phone:client?.phone ?? ''}}});
+        if (!assigned || assigned.courierId !== actorId) throw new DomainError('FORBIDDEN','Cette livraison doit être affectée à ce livreur avant son départ.',403);
+        await tx.delivery.update({where:{id:assigned.id},data:{status:'OUT_FOR_DELIVERY'}});
       }
       if(status === 'DELIVERED') {
         const delivery = await tx.delivery.findUnique({where:{orderId:id}});
@@ -1368,12 +1311,7 @@ const refundable =
       if(status === 'DELIVERED' || status === 'SERVED') {
         const reservation = await tx.mealReservation.findUnique({where:{orderId:id}});
         if(reservation) {
-          await tx.$queryRaw`SELECT id FROM "MealRight" WHERE id = ${reservation.mealRightId}::uuid FOR UPDATE`;
-          const right=await tx.mealRight.findUniqueOrThrow({where:{id:reservation.mealRightId}});
-          if(right.status !== 'RESERVED')throw new DomainError('MEAL_RIGHT_UNAVAILABLE','Le droit réservé ne peut plus être consommé.');
-          const consumption=await tx.mealConsumption.create({data:{mealRightId:right.id,orderId:id,servedById:actorId,idempotencyKey:key!}});
-          await tx.mealRight.update({where:{id:right.id},data:{status:'CONSUMED',consumedAt:consumption.consumedAt}});
-          await audit(tx,actorId,'MEAL_CONSUMED','MealRight',right.id,{orderId:id,consumptionId:consumption.id});
+          await consumeReservedMealRight(tx,{mealRightId:reservation.mealRightId,orderId:id,actorId,idempotencyKey:key!});
         }
       }
 
@@ -1448,6 +1386,34 @@ const refundable =
 export class OrdersController {
   constructor(private readonly orders: OrdersService, private readonly prisma: PrismaService, private readonly terminal: PaymentTerminalService) {}
   @Require('orders.create') @Post() create(@Body() body: unknown, @Headers('idempotency-key') key: string | undefined, @Req() req: AuthRequest) { return this.orders.create(body, key, req.actor.id).then(data => ({ success: true, data })); }
+  @Require('sales.create') @Get('client-to-collect') async clientOrdersToCollect(@Query() query: unknown) {
+    const { q = '' } = z.object({ q: z.string().trim().max(120).optional() }).parse(query);
+    const where = {
+      number: { startsWith: 'WEB-' },
+      clientId: { not: null },
+      status: 'RECEIVED' as const,
+      paymentRequired: true,
+      ...(q ? { OR: [
+        { number: { contains: q, mode: 'insensitive' as const } },
+        { client: { is: { firstName: { contains: q, mode: 'insensitive' as const } } } },
+        { client: { is: { lastName: { contains: q, mode: 'insensitive' as const } } } },
+        { client: { is: { ulcNumber: { contains: q, mode: 'insensitive' as const } } } },
+        { client: { is: { phone: { contains: q, mode: 'insensitive' as const } } } },
+      ] } : {}),
+    };
+    const [orders,total] = await Promise.all([this.prisma.order.findMany({ where, take: 100, orderBy: { createdAt: 'asc' }, include: {
+      client: { select: { firstName: true, lastName: true, ulcNumber: true, phone: true, category: { select: { code: true, label: true } } } },
+      items: { select: { id: true, quantity: true, lineTotal: true, productSnapshot: true, variantsSnapshot: true, supplementsSnapshot: true } },
+      delivery: { select: { addressSnapshot: true, status: true } },
+      payments: { select: { id: true, status: true, method: true, amountDue: true } },
+    } }),this.prisma.order.count({where})]);
+    const data = orders.map(order => {
+      const paid = order.payments.filter(payment => payment.status === 'CONFIRMED').reduce((sum, payment) => sum.add(payment.amountDue), new Prisma.Decimal(0));
+      const pending = order.payments.find(payment => payment.status === 'PENDING') ?? null;
+      return { ...order, paidAmount: paid.toString(), remainingAmount: order.totalAmount.sub(paid).toString(), pendingPayment: pending };
+    });
+    return { success: true, data: { orders: data, total } };
+  }
   @Require('cash.refund')
 @Post('payments/:id/refund')
 refundPayment(
@@ -1592,11 +1558,37 @@ export class DeliveryController {
   @Require('delivery.assign')
   @Get('dispatch')
   async dispatch() {
-    const [orders, couriers] = await Promise.all([
-      this.prisma.order.findMany({where:{serviceMode:'DELIVERY',status:'READY',delivery:{is:null}},take:100,orderBy:{createdAt:'asc'},select:{id:true,number:true,createdAt:true,client:{select:{firstName:true,lastName:true}},kitchenTicket:{include:{items:true}}}}),
-      this.prisma.user.findMany({where:{status:'ACTIVE',roles:{some:{role:{code:'LIVREUR'}}}},select:{id:true,firstName:true,lastName:true},orderBy:{firstName:'asc'}}),
+    const [orders, users, setting] = await Promise.all([
+      this.prisma.order.findMany({where:{serviceMode:'DELIVERY',status:'READY',OR:[{delivery:{is:null}},{delivery:{is:{courierId:null}}}]},take:100,orderBy:{createdAt:'asc'},select:{id:true,number:true,createdAt:true,client:{select:{firstName:true,lastName:true}},delivery:{select:{addressSnapshot:true}},kitchenTicket:{include:{items:true}}}}),
+      this.prisma.user.findMany({where:{status:'ACTIVE',roles:{some:{role:{code:'LIVREUR'}}},courierProfile:{is:{availability:'AVAILABLE'}}},select:{id:true,firstName:true,lastName:true,courierProfile:{select:{availability:true}}},orderBy:[{firstName:'asc'},{lastName:'asc'},{id:'asc'}]}),
+      this.prisma.setting.findUnique({where:{key:'livraison'}}),
     ]);
-    return {success:true,data:{orders,couriers}};
+    const config=setting?.value as {maxConcurrentDeliveries?:unknown}|undefined;
+    const max=setting?.validated&&typeof config?.maxConcurrentDeliveries==='number'&&Number.isInteger(config.maxConcurrentDeliveries)&&config.maxConcurrentDeliveries>0?config.maxConcurrentDeliveries:1;
+    const candidates=[];
+    for(const user of users){const activeMissions=await this.prisma.delivery.count({where:{courierId:user.id,status:{in:['READY','OUT_FOR_DELIVERY']}}});if(courierCanAccept(user.courierProfile!.availability,activeMissions,max))candidates.push({...user,courierProfile:undefined,activeMissions,capacity:max});}
+    return {success:true,data:{orders,couriers:rankCouriers(candidates)}};
+  }
+
+  @Require('delivery.read')
+  @Get('availability')
+  async availability(@Req() req:AuthRequest) {
+    const courier=await this.prisma.user.findFirst({where:{id:req.actor.id,status:'ACTIVE',roles:{some:{role:{code:'LIVREUR'}}}},select:{id:true,courierProfile:{select:{availability:true}}}});
+    if(!courier)return {success:true,data:{isCourier:false,availability:'UNAVAILABLE',manualAvailability:'UNAVAILABLE',activeMissions:0,capacity:1}};
+    const [activeMissions,setting]=await Promise.all([this.prisma.delivery.count({where:{courierId:req.actor.id,status:{in:['READY','OUT_FOR_DELIVERY']}}}),this.prisma.setting.findUnique({where:{key:'livraison'}})]);
+    const config=setting?.value as {maxConcurrentDeliveries?:unknown}|undefined;const capacity=setting?.validated&&typeof config?.maxConcurrentDeliveries==='number'&&Number.isInteger(config.maxConcurrentDeliveries)&&config.maxConcurrentDeliveries>0?config.maxConcurrentDeliveries:1;
+    const manualAvailability=courier.courierProfile?.availability??'UNAVAILABLE';const availability=effectiveCourierAvailability(manualAvailability,activeMissions,capacity);
+    return {success:true,data:{isCourier:true,availability,manualAvailability,activeMissions,capacity}};
+  }
+
+  @Require('delivery.read')
+  @Post('availability')
+  async setAvailability(@Body() input:unknown,@Req() req:AuthRequest) {
+    const availability=z.enum(['AVAILABLE','UNAVAILABLE']).parse((input as {availability?:unknown})?.availability);
+    const courier=await this.prisma.user.findFirst({where:{id:req.actor.id,status:'ACTIVE',roles:{some:{role:{code:'LIVREUR'}}}},select:{id:true}});
+    if(!courier)throw new DomainError('COURIER_ROLE_REQUIRED','Cette action est réservée aux livreurs actifs.',403);
+    const profile=await this.prisma.$transaction(async tx=>{await tx.$queryRaw`SELECT id FROM "User" WHERE id=${req.actor.id}::uuid FOR UPDATE`;const row=await tx.courierProfile.upsert({where:{userId:req.actor.id},create:{userId:req.actor.id,availability},update:{availability}});await audit(tx,req.actor.id,'COURIER_AVAILABILITY_CHANGED','CourierProfile',req.actor.id,{availability});return row;});
+    return {success:true,data:profile};
   }
 
   @Require('delivery.assign')
@@ -1606,11 +1598,16 @@ export class DeliveryController {
     const {courierId}=z.object({courierId:uuid}).strict().parse(input);
     return mutate(this.prisma,'delivery.assign',key,req.actor.id,{id,courierId},async tx=>{
       await lockOrder(tx,id);
-      const order=await tx.order.findFirst({where:{id,serviceMode:'DELIVERY',status:'READY',delivery:{is:null}},include:{client:true}});
+      const order=await tx.order.findFirst({where:{id,serviceMode:'DELIVERY',status:'READY',OR:[{delivery:{is:null}},{delivery:{is:{courierId:null}}}]},include:{client:true,delivery:true}});
       if(!order)throw new DomainError('DELIVERY_NOT_ASSIGNABLE','Cette commande n’est plus disponible pour affectation.',409);
-      const courier=await tx.user.findFirst({where:{id:courierId,status:'ACTIVE',roles:{some:{role:{code:'LIVREUR'}}}},select:{id:true}});
-      if(!courier)throw new DomainError('COURIER_NOT_FOUND','Livreur actif introuvable.',404);
-      const delivery=await tx.delivery.create({data:{orderId:id,courierId,status:'READY',assignedAt:new Date(),addressSnapshot:{residency:order.client?.residency??'',phone:order.client?.phone??''}}});
+      await tx.$queryRaw`SELECT id FROM "User" WHERE id=${courierId}::uuid FOR UPDATE`;
+      const courier=await tx.user.findFirst({where:{id:courierId,status:'ACTIVE',roles:{some:{role:{code:'LIVREUR'}}},courierProfile:{is:{availability:'AVAILABLE'}}},select:{id:true}});
+      if(!courier)throw new DomainError('COURIER_NOT_AVAILABLE','Ce livreur n’est plus disponible.',409);
+      const setting=await tx.setting.findUnique({where:{key:'livraison'}});const config=setting?.value as {maxConcurrentDeliveries?:unknown}|undefined;
+      const capacity=setting?.validated&&typeof config?.maxConcurrentDeliveries==='number'&&Number.isInteger(config.maxConcurrentDeliveries)&&config.maxConcurrentDeliveries>0?config.maxConcurrentDeliveries:1;
+      const active=await tx.delivery.count({where:{courierId,status:{in:['READY','OUT_FOR_DELIVERY']}}});
+      if(!courierCanAccept('AVAILABLE',active,capacity))throw new DomainError('COURIER_NOT_AVAILABLE','Ce livreur n’est plus disponible.',409);
+      const delivery=order.delivery?await tx.delivery.update({where:{id:order.delivery.id},data:{courierId,status:'READY',assignedAt:new Date()}}):await tx.delivery.create({data:{orderId:id,courierId,status:'READY',assignedAt:new Date(),addressSnapshot:{recipientName:order.client?.firstName+' '+order.client?.lastName,contactPhone:order.client?.phone??'',dropoffPoint:order.client?.residency??''}}});
       await audit(tx,req.actor.id,'DELIVERY_ASSIGNED','Delivery',delivery.id,{orderId:id,courierId});
       return delivery;
     }).then(data=>({success:true,data}));
@@ -1649,6 +1646,7 @@ export class DeliveryController {
             serviceMode: true,
             createdAt: true,
             client: {select:{firstName:true,lastName:true,phone:true,residency:true}},
+            delivery: {select:{status:true,addressSnapshot:true,failureReason:true}},
             kitchenTicket: {
               include: {
                 items: true,
@@ -1692,5 +1690,20 @@ export class DeliveryController {
         success: true,
         data,
       }));
+  }
+
+  @Require('delivery.confirm')
+  @Post(':id/failure')
+  reportFailure(@Param('id') id:string,@Body() input:unknown,@Headers('idempotency-key') key:string|undefined,@Req() req:AuthRequest) {
+    uuid.parse(id);
+    const {reason}=z.object({reason:z.string().trim().min(3).max(500)}).strict().parse(input);
+    return mutate(this.prisma,'delivery.failure',key,req.actor.id,{id,reason},async tx=>{
+      await lockOrder(tx,id);
+      const delivery=await tx.delivery.findFirst({where:{orderId:id,courierId:req.actor.id,status:{in:['READY','OUT_FOR_DELIVERY']}},include:{order:true}});
+      if(!delivery||delivery.order.serviceMode!=='DELIVERY'||!['READY','OUT_FOR_DELIVERY'].includes(delivery.order.status))throw new DomainError('DELIVERY_NOT_ACTIVE','Cette livraison n’est plus active.',409);
+      const failed=await tx.delivery.update({where:{id:delivery.id},data:{status:'FAILED',failureReason:reason}});
+      await audit(tx,req.actor.id,'DELIVERY_FAILED','Delivery',delivery.id,{orderId:id,reason});
+      return failed;
+    }).then(data=>({success:true,data}));
   }
 }

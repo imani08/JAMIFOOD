@@ -95,6 +95,11 @@ enum ServiceMode {
   DELIVERY
 }
 
+enum CourierAvailability {
+  AVAILABLE
+  UNAVAILABLE
+}
+
 enum CashSessionStatus {
   OPEN
   COUNTING
@@ -129,8 +134,16 @@ model User {
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
   roles        UserRole[]
+  courierProfile CourierProfile?
   sessions     Session[]
   auditLogs    AuditLog[]
+}
+
+model CourierProfile {
+  userId      String              @id @db.Uuid
+  availability CourierAvailability @default(UNAVAILABLE)
+  updatedAt   DateTime            @updatedAt
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Role {

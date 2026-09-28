@@ -27,6 +27,8 @@ type Order = {
 
       preparationSnapshot: {
         name: string;
+        variants?: Record<string,string>|null;
+        supplements?: {name:string;quantity:number}[]|null;
       };
     }[];
   } | null;
@@ -128,15 +130,11 @@ export default function Kitchen() {
 
                     {o.kitchenTicket?.items.map(
                       (i) => (
-                        <p key={i.id}>
-                          {i.quantity}
-                          {' × '}
-                          {
-                            i
-                              .preparationSnapshot
-                              .name
-                          }
-                        </p>
+                        <div key={i.id} className="pos-order-line">
+                          <strong>{i.quantity} × {i.preparationSnapshot.name}</strong>
+                          {i.preparationSnapshot.variants&&Object.entries(i.preparationSnapshot.variants).map(([name,value])=><small className="muted" key={name}>• {name} : {value}</small>)}
+                          {i.preparationSnapshot.supplements?.map((supplement,index)=><small className="muted" key={`${supplement.name}-${index}`}>• + {supplement.name} ×{supplement.quantity}</small>)}
+                        </div>
                       ),
                     )}
 

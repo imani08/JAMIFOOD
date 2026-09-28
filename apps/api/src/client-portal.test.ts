@@ -1,25 +1,51 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { ClientPortalService, clientCreateOrderSchema, clientOrderReplay } from './client-portal';
+import { ClientPortalService, clientCreateOrderSchema, clientOrderReplay, resolveCampusDelivery } from './client-portal';
 
 const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
 describe('client order customization input',()=>{
-  const menuVersionId='11111111-1111-4111-8111-111111111111';const meal='22222222-2222-4222-8222-222222222222';const optionGroup='33333333-3333-4333-8333-333333333333';
+  const menuVersionId='11111111-1111-4111-8111-111111111111';const context={serviceCode:'LUNCH' as const,businessDate:'2026-09-28'};const meal='22222222-2222-4222-8222-222222222222';const optionGroup='33333333-3333-4333-8333-333333333333';
   it('accepts duplicate products as separate customized lines and simple products without options',()=>{
-    const parsed=clientCreateOrderSchema.parse({menuVersionId,serviceMode:'TAKEAWAY',currency:'CDF',items:[{productId:meal,quantity:1,variant:'Riz'},{productId:meal,quantity:1,variant:'Frites',optionSelections:[{groupId:optionGroup,optionIds:[]}]}]});
+    const parsed=clientCreateOrderSchema.parse({menuVersionId,...context,serviceMode:'TAKEAWAY',currency:'CDF',items:[{productId:meal,quantity:1,variant:'Riz'},{productId:meal,quantity:1,variant:'Frites',optionSelections:[{groupId:optionGroup,optionIds:[]}]}]});
     expect(parsed.items).toHaveLength(2);expect(parsed.items[0].variant).toBe('Riz');expect(parsed.items[1].variant).toBe('Frites');
-    expect(clientCreateOrderSchema.parse({menuVersionId,serviceMode:'TAKEAWAY',currency:'CDF',items:[{productId:meal,quantity:1}]}).items[0].optionSelections).toBeUndefined();
+    expect(clientCreateOrderSchema.parse({menuVersionId,...context,serviceMode:'TAKEAWAY',currency:'CDF',items:[{productId:meal,quantity:1}]}).items[0].optionSelections).toBeUndefined();
   });
   it('accepts the reported meal plus two-portion TAKEAWAY basket shape',()=>{
-    const parsed=clientCreateOrderSchema.parse({menuVersionId,serviceMode:'TAKEAWAY',currency:'CDF',items:[{productId:meal,quantity:1},{productId:'44444444-4444-4444-8444-444444444444',quantity:2}]});
+    const parsed=clientCreateOrderSchema.parse({menuVersionId,...context,serviceMode:'TAKEAWAY',currency:'CDF',items:[{productId:meal,quantity:1},{productId:'44444444-4444-4444-8444-444444444444',quantity:2}]});
     expect(parsed.items.map(item=>item.quantity)).toEqual([1,2]);
+  });
+  it('requires the selected published menu service and business date',()=>{
+    const input={menuVersionId,...context,serviceMode:'TAKEAWAY',currency:'CDF',items:[{productId:meal,quantity:1}]};
+    expect(clientCreateOrderSchema.safeParse(input).success).toBe(true);
+    const {serviceCode:_serviceCode,...withoutService}=input;
+    expect(clientCreateOrderSchema.safeParse(withoutService).success).toBe(false);
+  });
+  it('requires delivery details only when DELIVERY is explicitly selected',()=>{
+    const items=[{productId:meal,quantity:1}];
+    expect(clientCreateOrderSchema.safeParse({menuVersionId,...context,serviceMode:'DINE_IN',currency:'CDF',items}).success).toBe(true);
+    expect(clientCreateOrderSchema.safeParse({menuVersionId,...context,serviceMode:'DELIVERY',currency:'CDF',items}).success).toBe(false);
+    const details={recipientName:'Imani Charles',contactPhone:'+243800000000',dropoffPoint:'Point de remise sur le campus ULC'};
+    expect(clientCreateOrderSchema.safeParse({menuVersionId,...context,serviceMode:'DELIVERY',currency:'CDF',items,delivery:details}).success).toBe(false);
+    expect(clientCreateOrderSchema.safeParse({menuVersionId,...context,serviceMode:'DELIVERY',currency:'CDF',items,delivery:{...details,requestedDeliveryTime:'12:30'}}).success).toBe(true);
+  });
+});
+describe('campus delivery configuration',()=>{
+  it('requires the setting to be validated and enabled and always returns a free CDF point',()=>{
+    expect(resolveCampusDelivery(null)).toMatchObject({available:false,reason:'DELIVERY_SETTING_MISSING'});
+    expect(resolveCampusDelivery({validated:false,value:{enabled:true,zones:[{name:'Point de remise sur le campus ULC',fee:0,currency:'CDF'}]}})).toMatchObject({available:false,reason:'DELIVERY_SETTING_NOT_VALIDATED'});
+    expect(resolveCampusDelivery({validated:true,value:{enabled:true,zones:[{name:'Point de remise sur le campus ULC',fee:500,currency:'USD'}]}})).toMatchObject({enabled:true,available:true,reason:null,fee:0,currency:'CDF',zones:[{name:'Point de remise sur le campus ULC',fee:0,currency:'CDF'}]});
+    expect(resolveCampusDelivery({validated:true,value:{enabled:true,fee:{mode:'FREE',amount:0,currency:'CDF'},zones:[{name:'Campus ULC',fee:0,currency:'CDF',enabled:true}],dropoffPoints:['Point de remise sur le campus ULC'],schedule:{orderCutoffMinutes:null,useRestaurantServiceHours:true}}})).toMatchObject({available:true,serviceArea:'Campus ULC',zones:[{name:'Point de remise sur le campus ULC',fee:0,currency:'CDF'}],schedule:{orderCutoffMinutes:null,useRestaurantServiceHours:true}});
+  });
+
+  it('rejects configured points that are not explicitly on the ULC campus',()=>{
+    expect(resolveCampusDelivery({validated:true,value:{enabled:true,zones:[{name:'Résidence Home 023',fee:0,currency:'CDF'}]}})).toMatchObject({available:false,reason:'DELIVERY_SETTING_INVALID',zones:[]});
   });
 });
 describe('client order idempotency replay',()=>{
   const previous={id:'order-1',clientId:'client-1',clientRequestHash:'hash-a',number:'WEB-2026-A',status:'RECEIVED',totalAmount:'9000',commercialTotal:'9000',coveredAmount:'0',mealRightId:null,currency:'CDF',createdAt:new Date('2026-09-28T10:00:00Z'),items:[{quantity:1,lineTotal:'9000',productSnapshot:{name:'Repas',supplement:false}}]};
   it('returns the saved order response for the same client and payload hash',()=>{
     const first=clientOrderReplay(previous,'client-1','hash-a');const retry=clientOrderReplay(previous,'client-1','hash-a');
-    expect(retry).toEqual(first);expect(retry.number).toBe('WEB-2026-A');expect(retry.lines).toEqual([{name:'Repas',commercialAmount:9000,coveredAmount:0,amountDue:9000,supplement:false}]);
+    expect(retry).toEqual(first);expect(retry.number).toBe('WEB-2026-A');expect(retry.lines).toEqual([{name:'Repas',categoryCode:'OTHER',commercialAmount:9000,coveredAmount:0,coverageQuantity:0,quantity:1,amountDue:9000,supplement:false,meal:false,supplementAmount:0}]);
   });
   it('rejects a changed payload or another client using the same key',()=>{
     expect(()=>clientOrderReplay(previous,'client-1','hash-b')).toThrowError(expect.objectContaining({code:'IDEMPOTENCY_KEY_REUSED'}));

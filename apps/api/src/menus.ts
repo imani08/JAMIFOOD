@@ -8,6 +8,8 @@ import {
   Post,
   Query,
   Req,
+  Logger,
+  Res,
 } from '@nestjs/common';
 
 import { Prisma } from '@jami/database';
@@ -28,12 +30,17 @@ import {
   mutate,
   Tx,
 } from './transaction';
+import type { Response } from './transport';
 
 const serviceSchema = z.enum([
   'BREAKFAST',
   'LUNCH',
   'DINNER',
 ]);
+
+export function menuRemaining(available: number, sold: number, reserved: number) {
+  return Math.max(0, available - sold - reserved);
+}
 
 const dateSchema = z
   .string()
@@ -160,6 +167,7 @@ async function requireDraft(
 
 @Controller('menus')
 export class MenusController {
+  private readonly logger = new Logger(MenusController.name);
   constructor(
     private readonly db: PrismaService,
   ) {}
@@ -221,9 +229,11 @@ export class MenusController {
   @Public()
   @Get('public')
   async publicMenu(
-    @Query('date') inputDate?: string,
-    @Query('serviceCode') inputService?: string,
+    @Query('date') inputDate: string | undefined,
+    @Query('serviceCode') inputService: string | undefined,
+    @Res({ passthrough: true }) response: Response,
   ) {
+    response.setHeader('Cache-Control', 'no-store, max-age=0');
     const today = new Intl.DateTimeFormat('en-CA', { timeZone: process.env.RESTAURANT_TIMEZONE ?? 'Africa/Kinshasa' }).format(new Date());
     const businessDate = dateSchema.parse(inputDate ?? today);
     const serviceCode = serviceSchema.parse(inputService ?? 'LUNCH');
@@ -242,7 +252,7 @@ export class MenusController {
     const optionsByProduct = new Map<string, typeof optionGroups>();
     for (const group of optionGroups) optionsByProduct.set(group.productId, [...(optionsByProduct.get(group.productId) ?? []), group]);
     const items = version.items.flatMap(item => {
-      const remaining = Math.max(0, item.quantityAvailable - item.quantitySold - item.quantityReserved);
+      const remaining = menuRemaining(item.quantityAvailable, item.quantitySold, item.quantityReserved);
       if (!remaining || !item.product.active || !item.product.available) return [];
       const snapshot = item.priceSnapshot as { categories?: Record<string, { amount: string; currency: string }> } | null;
       const price = snapshot?.categories?.[category];
@@ -686,6 +696,26 @@ export class MenusController {
       success: true,
       data,
     }));
+  }
+
+  @Require('menus.manage')
+  @Delete('versions/:versionId/items/:itemId')
+  removeDraftItem(
+    @Param('versionId') versionId: string,
+    @Param('itemId') itemId: string,
+    @Headers('idempotency-key') key: string | undefined,
+    @Req() req: AuthRequest,
+  ) {
+    uuid.parse(versionId);
+    uuid.parse(itemId);
+    return mutate(this.db, 'menu.item.remove', key, req.actor.id, { versionId, itemId }, async tx => {
+      await requireDraft(tx, versionId);
+      const before = await tx.menuItem.findFirst({ where: { id: itemId, menuVersionId: versionId }, include: { product: { select: { sku: true, name: true } } } });
+      if (!before) throw new DomainError('MENU_ITEM_NOT_FOUND', 'Article introuvable dans ce brouillon.', 404);
+      await tx.menuItem.delete({ where: { id: itemId } });
+      await audit(tx, req.actor.id, 'MENU_ITEM_REMOVED', 'MenuItem', itemId, json({ menuVersionId: versionId, productId: before.productId, sku: before.product.sku, name: before.product.name }));
+      return { removed: true, itemId };
+    }).then(data => ({ success: true, data }));
   }
 
   // ============================================================
@@ -1248,13 +1278,11 @@ export class MenusController {
     const items =
       version.items.flatMap(
         (item) => {
-          const remaining =
-            Math.max(
-              0,
-              item.quantityAvailable -
-                item.quantitySold -
-                item.quantityReserved,
-            );
+          const remaining = menuRemaining(item.quantityAvailable, item.quantitySold, item.quantityReserved);
+
+          if (item.quantityAvailable - item.quantitySold - item.quantityReserved < 0) {
+            this.logger.warn({ menuItemId: item.id, quantityAvailable: item.quantityAvailable, quantitySold: item.quantitySold, quantityReserved: item.quantityReserved }, 'Menu item inventory counters exceed available quantity');
+          }
 
           if (
             remaining <= 0 ||
@@ -1291,6 +1319,12 @@ export class MenusController {
             {
               id: item.id,
 
+              quantityAvailable: item.quantityAvailable,
+
+              quantitySold: item.quantitySold,
+
+              quantityReserved: item.quantityReserved,
+
               productId:
                 item.productId,
 
@@ -1316,15 +1350,6 @@ export class MenusController {
 
               variants:
                 item.variants,
-
-              quantityAvailable:
-                item.quantityAvailable,
-
-              quantitySold:
-                item.quantitySold,
-
-              quantityReserved:
-                item.quantityReserved,
 
               remaining,
 

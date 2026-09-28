@@ -65,7 +65,7 @@ function ProductOptionsEditor({ product, products }: { product: Product; product
   const groups = useData<Array<{id:string;name:string;type:'VARIANT'|'SUPPLEMENT';required:boolean;minSelections:number;maxSelections:number;active:boolean}>>(`/menus/products/${product.id}/option-groups`);
   const [name,setName]=useState('');const [type,setType]=useState<'VARIANT'|'SUPPLEMENT'>('VARIANT');const [required,setRequired]=useState(false);const [min,setMin]=useState(0);const [max,setMax]=useState(1);
   const [rows,setRows]=useState<Array<{name:string;priceDelta:string;currency:'CDF'|'USD';linkedProductId:string}>>([{name:'',priceDelta:'0',currency:'CDF',linkedProductId:''}]);
-  async function save(event:React.FormEvent<HTMLFormElement>){event.preventDefault();const options=rows.filter(row=>row.name.trim()).map((row,position)=>({...row,position,...(row.linkedProductId?{linkedProductId:row.linkedProductId}:{})}));const result=await action.run(()=>api(`/menus/products/${product.id}/option-groups`,{name,type,required,minSelections:min,maxSelections:max,options}),'Options enregistrées.');if(result){setName('');setRows([{name:'',priceDelta:'0',currency:'CDF',linkedProductId:''}]);}}
+  async function save(event:React.FormEvent<HTMLFormElement>){event.preventDefault();const options=rows.filter(row=>row.name.trim()).map((row,position)=>({name:row.name.trim(),priceDelta:row.priceDelta,currency:row.currency,position,...(row.linkedProductId?{linkedProductId:row.linkedProductId}:{})}));const result=await action.run(()=>api(`/menus/products/${product.id}/option-groups`,{name,type,required,minSelections:min,maxSelections:max,options}),'Options enregistrées.');if(result){setName('');setRows([{name:'',priceDelta:'0',currency:'CDF',linkedProductId:''}]);}}
   return <section className="card section"><h3>Personnalisation · {product.name}</h3><p className="muted small">Les variantes sont incluses. Les suppléments peuvent utiliser le prix et le stock d’un produit lié.</p><Feedback error={action.error} notice={action.notice}/><div className="list">{groups.data?.filter(group=>group.active).map(group=><div className="item" key={group.id}><span className="badge">{group.type==='VARIANT'?'Variante':'Supplément'} · {group.name} · {group.minSelections}–{group.maxSelections}</span><button className="secondary" type="button" onClick={()=>action.run(()=>apiDelete(`/menus/option-groups/${group.id}`),'Groupe archivé.')}>Archiver</button></div>)}</div><form onSubmit={save} className="section"><div className="form-grid"><label>Nom du groupe<input value={name} onChange={e=>setName(e.target.value)} placeholder="Accompagnement" required/></label><label>Type<select value={type} onChange={e=>setType(e.target.value as 'VARIANT'|'SUPPLEMENT')}><option value="VARIANT">Variante incluse</option><option value="SUPPLEMENT">Supplément</option></select></label><label>Minimum de choix<input type="number" min="0" max="20" value={min} onChange={e=>setMin(Number(e.target.value))}/></label><label>Maximum de choix<input type="number" min="1" max="20" value={max} onChange={e=>setMax(Number(e.target.value))}/></label></div><label><span><input type="checkbox" checked={required} onChange={e=>setRequired(e.target.checked)}/> Choix obligatoire</span></label>{rows.map((row,index)=><div className="form-grid" key={index}><label>Option<input value={row.name} onChange={e=>setRows(current=>current.map((v,i)=>i===index?{...v,name:e.target.value}:v))} placeholder="Foufou"/></label><label>Prix supplémentaire<input type="number" min="0" step="0.01" value={row.priceDelta} onChange={e=>setRows(current=>current.map((v,i)=>i===index?{...v,priceDelta:e.target.value}:v))} disabled={type==='VARIANT'||!!row.linkedProductId}/></label><label>Devise<select value={row.currency} onChange={e=>setRows(current=>current.map((v,i)=>i===index?{...v,currency:e.target.value as 'CDF'|'USD'}:v))}><option>CDF</option><option>USD</option></select></label><label>Produit lié (prix et stock)<select value={row.linkedProductId} onChange={e=>setRows(current=>current.map((v,i)=>i===index?{...v,linkedProductId:e.target.value}:v))}><option value="">Prix fixe du supplément</option>{products.filter(p=>p.id!==product.id&&p.active).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label></div>)}<div className="actions"><button className="secondary" type="button" onClick={()=>setRows(current=>[...current,{name:'',priceDelta:'0',currency:'CDF',linkedProductId:''}])}>Ajouter une option</button><button className="primary" disabled={action.busy||!name.trim()||rows.every(row=>!row.name.trim())}>Enregistrer le groupe</button></div></form></section>;
 }
 
@@ -123,9 +123,11 @@ function serviceLabel(
 function VersionEditor({
   version,
   products,
+  onDuplicated,
 }: {
   version: MenuVersion;
   products: Product[];
+  onDuplicated: (date: string, names: string[]) => void;
 }) {
   const action = useAction();
 
@@ -244,9 +246,9 @@ function VersionEditor({
       return;
     }
 
-    await action.run(
+    const duplicated = await action.run(
       () =>
-        api(
+        api<{items:Array<{productId:string}>}>(
           `/menus/versions/${version.id}/duplicate`,
           {
             businessDate:
@@ -259,6 +261,9 @@ function VersionEditor({
 
       'Menu dupliqué en nouveau brouillon.',
     );
+    if (duplicated) {
+      onDuplicated(duplicateDate, duplicated.items.map(item => products.find(product => product.id === item.productId)?.name ?? item.productId));
+    }
   }
 
   return (
@@ -316,6 +321,7 @@ function VersionEditor({
               <th>Variantes</th>
               <th>Prévu</th>
               <th>Vendu</th>
+              <th>Réservé</th>
               <th>Restant</th>
               <th>État</th>
               <th>Action</th>
@@ -329,7 +335,7 @@ function VersionEditor({
                   Math.max(
                     0,
                     item.quantityAvailable -
-                    item.quantitySold +
+                    item.quantitySold -
                     item.quantityReserved,
                   );
 
@@ -378,6 +384,8 @@ function VersionEditor({
                       }
                     </td>
 
+                    <td>{item.quantityReserved}</td>
+
                     <td>
                       {remaining}
                     </td>
@@ -418,6 +426,7 @@ function VersionEditor({
                           ? 'Marquer épuisé'
                           : 'Remettre disponible'}
                       </button>
+                      {version.status === 'DRAFT' && <button className="secondary" type="button" disabled={action.busy} onClick={() => { if (window.confirm(`Retirer « ${item.product.name} » de ce brouillon ?`)) action.run(() => apiDelete(`/menus/versions/${version.id}/items/${item.id}`), 'Article retiré du brouillon.'); }}>Retirer du menu</button>}
                     </td>
                   </tr>
                 );
@@ -564,6 +573,7 @@ function VersionEditor({
         <h3>
           Dupliquer ce menu
         </h3>
+        <p className="muted">La duplication copie tous les articles et leurs quantités/variantes dans un nouveau brouillon. Vérifiez la liste copiée avant publication.</p>
 
         <div className="form-grid">
           <label>
@@ -627,6 +637,7 @@ export default function Menus() {
     useState(
       kinshasaToday(),
     );
+  const [duplicateSummary, setDuplicateSummary] = useState<{date:string;names:string[]}|null>(null);
   const [menuImage, setMenuImage] =
   useState<File | null>(null);
 
@@ -694,6 +705,7 @@ export default function Menus() {
         error={action.error}
         notice={action.notice}
       />
+      {duplicateSummary && <section className="card section"><h3>Brouillon du {duplicateSummary.date} dupliqué avec {duplicateSummary.names.length} article(s)</h3><p>Articles déjà présents dans ce brouillon :</p>{duplicateSummary.names.length ? <ul>{duplicateSummary.names.map((name,index)=><li key={`${name}-${index}`}>{name}</li>)}</ul> : <p className="muted">La version source ne contenait aucun article.</p>}</section>}
 
       <div className="two-columns">
         <section className="card">
@@ -828,6 +840,7 @@ export default function Menus() {
                     products.data ??
                     []
                   }
+                  onDuplicated={(date,names)=>{setDuplicateSummary({date,names});setSelectedDate(date);}}
                 />
               ),
             )}

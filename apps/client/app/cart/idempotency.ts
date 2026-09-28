@@ -1,7 +1,11 @@
 export type OrderAttemptPayload = {
   menuVersionId: string;
-  serviceMode: 'DINE_IN' | 'TAKEAWAY';
+  serviceCode: 'BREAKFAST'|'LUNCH'|'DINNER';
+  businessDate: string;
+  serviceMode: 'DINE_IN' | 'TAKEAWAY' | 'DELIVERY';
   currency: string;
+  acceptUnitPrice?: boolean;
+  delivery?: {recipientName:string;contactPhone:string;dropoffPoint:string;requestedDeliveryTime?:string;instructions?:string};
   items: Array<{
     productId: string;
     quantity: number;
@@ -28,7 +32,7 @@ export function canonicalOrderPayload(payload: OrderAttemptPayload): OrderAttemp
     } : {}),
   }));
   items.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
-  return { menuVersionId: payload.menuVersionId, serviceMode: payload.serviceMode, currency: payload.currency, items };
+  return { menuVersionId: payload.menuVersionId, serviceCode:payload.serviceCode, businessDate:payload.businessDate, serviceMode: payload.serviceMode, currency: payload.currency, ...(payload.acceptUnitPrice ? { acceptUnitPrice: true } : {}), ...(payload.delivery?{delivery:payload.delivery}:{}), items };
 }
 
 export function getOrderAttempt(storage: AttemptStorage, payload: OrderAttemptPayload, createKey: () => string) {
