@@ -7,6 +7,1025 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id                   String                @id @default(uuid()) @db.Uuid
+  username             String                @unique
+  email                String?               @unique
+  firstName            String
+  lastName             String
+  phone                String?
+  passwordHash         String
+  status               UserStatus            @default(ACTIVE)
+  lastLoginAt          DateTime?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  auditLogs            AuditLog[]
+  LegacyCourierProfile LegacyCourierProfile?
+  cashierOrders        Order[]               @relation("OrderCashier")
+  sessions             Session[]
+  roles                UserRole[]
+}
+
+model Role {
+  id          String           @id @default(uuid()) @db.Uuid
+  code        String           @unique
+  label       String
+  permissions RolePermission[]
+  users       UserRole[]
+}
+
+model Permission {
+  id    String           @id @default(uuid()) @db.Uuid
+  code  String           @unique
+  label String
+  roles RolePermission[]
+}
+
+model UserRole {
+  userId String @db.Uuid
+  roleId String @db.Uuid
+  role   Role   @relation(fields: [roleId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@id([userId, roleId])
+}
+
+model RolePermission {
+  roleId       String     @db.Uuid
+  permissionId String     @db.Uuid
+  permission   Permission @relation(fields: [permissionId], references: [id])
+  role         Role       @relation(fields: [roleId], references: [id])
+
+  @@id([roleId, permissionId])
+}
+
+model Session {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @db.Uuid
+  tokenHash      String   @unique
+  expiresAt      DateTime
+  lastActivityAt DateTime
+  createdAt      DateTime @default(now())
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  actorId    String?  @db.Uuid
+  action     String
+  entityType String
+  entityId   String?
+  oldValue   Json?
+  newValue   Json?
+  metadata   Json?
+  ip         String?
+  deviceId   String?
+  requestId  String   @default(uuid())
+  createdAt  DateTime @default(now())
+  actor      User?    @relation(fields: [actorId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+  @@index([createdAt])
+}
+
+model IdempotencyRecord {
+  id             String   @id @default(uuid()) @db.Uuid
+  scope          String
+  key            String
+  requestHash    String
+  responseStatus Int
+  responseBody   Json
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  @@unique([scope, key])
+  @@index([expiresAt])
+}
+
+model ClientCategory {
+  id      String   @id @default(uuid()) @db.Uuid
+  code    String   @unique
+  label   String
+  active  Boolean  @default(true)
+  clients Client[]
+}
+
+model Client {
+  id                    String               @id @default(uuid()) @db.Uuid
+  categoryId            String               @db.Uuid
+  firstName             String
+  lastName              String
+  ulcNumber             String?              @unique
+  faculty               String?
+  promotion             String?
+  residency             String?
+  phone                 String?
+  email                 String?
+  photoObjectKey        String?
+  dietaryNotesEncrypted String?
+  status                ClientStatus         @default(ACTIVE)
+  mergedIntoId          String?              @db.Uuid
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  archivedAt            DateTime?
+  category              ClientCategory       @relation(fields: [categoryId], references: [id])
+  LegacyClientAccount   LegacyClientAccount?
+  LegacyQRCode          LegacyQRCode[]
+  orders                Order[]
+  subscriptions         Subscription[]
+
+  @@index([lastName, firstName])
+  @@index([firstName, lastName])
+  @@index([phone])
+}
+
+model SubscriptionPlan {
+  id       String                    @id @default(uuid()) @db.Uuid
+  code     String                    @unique
+  name     String
+  active   Boolean                   @default(true)
+  versions SubscriptionPlanVersion[]
+}
+
+model SubscriptionPlanVersion {
+  id                     String           @id @default(uuid()) @db.Uuid
+  planId                 String           @db.Uuid
+  version                Int
+  price                  Decimal          @db.Decimal(18, 2)
+  currency               Currency
+  services               Json
+  eligibilityDays        Json
+  quotaRules             Json
+  effectiveFrom          DateTime
+  effectiveTo            DateTime?
+  status                 PriceStatus      @default(SCHEDULED)
+  durationDays           Int              @default(30)
+  legacyDeliveryIncluded Boolean          @default(false)
+  subscriptions          Subscription[]
+  plan                   SubscriptionPlan @relation(fields: [planId], references: [id])
+
+  @@unique([planId, version])
+  @@index([planId, effectiveFrom])
+}
+
+model Subscription {
+  id                     String                   @id @default(uuid()) @db.Uuid
+  clientId               String                   @db.Uuid
+  planVersionId          String                   @db.Uuid
+  status                 SubscriptionStatus       @default(PENDING_PAYMENT)
+  startsOn               DateTime                 @db.Date
+  endsOn                 DateTime                 @db.Date
+  amount                 Decimal                  @db.Decimal(18, 2)
+  currency               Currency
+  paidAmount             Decimal                  @default(0) @db.Decimal(18, 2)
+  balance                Decimal                  @db.Decimal(18, 2)
+  serviceSnapshot        Json
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
+  renewedFromId          String?                  @db.Uuid
+  legacyDeliveryIncluded Boolean                  @default(false)
+  rights                 MealRight[]
+  payments               Payment[]
+  client                 Client                   @relation(fields: [clientId], references: [id])
+  planVersion            SubscriptionPlanVersion  @relation(fields: [planVersionId], references: [id])
+  renewedFrom            Subscription?            @relation("SubscriptionRenewal", fields: [renewedFromId], references: [id], onDelete: Restrict)
+  renewals               Subscription[]           @relation("SubscriptionRenewal")
+  suspensions            SubscriptionSuspension[]
+
+  @@index([clientId, status])
+  @@index([status, startsOn, endsOn])
+}
+
+model SubscriptionSuspension {
+  id              String       @id @default(uuid()) @db.Uuid
+  subscriptionId  String       @db.Uuid
+  startsOn        DateTime     @db.Date
+  endsOn          DateTime?    @db.Date
+  reason          String
+  endDateExtended Boolean      @default(false)
+  createdById     String       @db.Uuid
+  resumedAt       DateTime?
+  resumedById     String?      @db.Uuid
+  createdAt       DateTime     @default(now())
+  subscription    Subscription @relation(fields: [subscriptionId], references: [id])
+
+  @@index([subscriptionId, startsOn])
+}
+
+model MealRight {
+  id             String           @id @default(uuid()) @db.Uuid
+  subscriptionId String           @db.Uuid
+  businessDate   DateTime         @db.Date
+  serviceCode    String
+  quotaGroup     String           @default("MAIN")
+  status         MealRightStatus  @default(AVAILABLE)
+  reservedAt     DateTime?
+  consumedAt     DateTime?
+  consumption    MealConsumption?
+  reservation    MealReservation?
+  subscription   Subscription     @relation(fields: [subscriptionId], references: [id])
+
+  @@unique([subscriptionId, businessDate, serviceCode, quotaGroup])
+  @@index([status, businessDate, serviceCode])
+}
+
+model MealConsumption {
+  id             String    @id @default(uuid()) @db.Uuid
+  mealRightId    String    @unique @db.Uuid
+  orderId        String?   @unique @db.Uuid
+  servedById     String    @db.Uuid
+  idempotencyKey String    @unique
+  consumedAt     DateTime  @default(now())
+  mealRight      MealRight @relation(fields: [mealRightId], references: [id])
+  order          Order?    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+}
+
+model MealReservation {
+  id           String    @id @default(uuid()) @db.Uuid
+  mealRightId  String    @unique @db.Uuid
+  orderId      String    @unique @db.Uuid
+  expiresAt    DateTime?
+  reservedById String    @db.Uuid
+  mealRight    MealRight @relation(fields: [mealRightId], references: [id])
+  order        Order     @relation(fields: [orderId], references: [id])
+}
+
+model ProductCategory {
+  id        String    @id @default(uuid()) @db.Uuid
+  code      String    @unique
+  label     String
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @default(now()) @updatedAt
+  products  Product[]
+}
+
+model Product {
+  id                  String               @id @default(uuid()) @db.Uuid
+  categoryId          String               @db.Uuid
+  sku                 String?              @unique
+  name                String
+  active              Boolean              @default(true)
+  available           Boolean              @default(true)
+  baseComposition     String?
+  createdAt           DateTime             @default(now())
+  description         String?
+  optionsDescription  String?
+  saleUnit            String               @default("portion")
+  updatedAt           DateTime             @default(now()) @updatedAt
+  variantsDescription String?
+  imageUrl            String               @default("/products/placeholder.svg")
+  stockMode           String               @default("PRODUCTION")
+  stockItemId         String?              @db.Uuid
+  stockQuantity       Decimal              @default(1) @db.Decimal(18, 3)
+  menuItems           MenuItem[]
+  orderItems          OrderItem[]
+  category            ProductCategory      @relation(fields: [categoryId], references: [id])
+  stockItem           StockItem?           @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+  linkedOptions       ProductOption[]      @relation("LinkedProductOptions")
+  optionGroups        ProductOptionGroup[]
+  prices              ProductPrice[]
+
+  @@index([categoryId, active, available])
+  @@index([name])
+}
+
+model ProductOptionGroup {
+  id            String                 @id @default(uuid()) @db.Uuid
+  productId     String                 @db.Uuid
+  name          String
+  type          ProductOptionGroupType @default(VARIANT)
+  required      Boolean                @default(false)
+  minSelections Int                    @default(0)
+  maxSelections Int                    @default(1)
+  position      Int                    @default(0)
+  active        Boolean                @default(true)
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  options       ProductOption[]
+  product       Product                @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, active, position])
+}
+
+model ProductOption {
+  id              String             @id @default(uuid()) @db.Uuid
+  groupId         String             @db.Uuid
+  name            String
+  linkedProductId String?            @db.Uuid
+  priceDelta      Decimal            @default(0) @db.Decimal(18, 2)
+  currency        Currency           @default(CDF)
+  position        Int                @default(0)
+  active          Boolean            @default(true)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  group           ProductOptionGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  linkedProduct   Product?           @relation("LinkedProductOptions", fields: [linkedProductId], references: [id], onDelete: Restrict)
+
+  @@index([groupId, active, position])
+  @@index([linkedProductId])
+}
+
+model ProductPrice {
+  categoryCode String         @default("ETUDIANT_EXTERNE")
+  id           String         @id @default(uuid()) @db.Uuid
+  productId    String         @db.Uuid
+  versions     PriceVersion[]
+  product      Product        @relation(fields: [productId], references: [id])
+
+  @@unique([productId, categoryCode])
+  @@index([categoryCode])
+}
+
+model PriceVersion {
+  id             String       @id @default(uuid()) @db.Uuid
+  productPriceId String       @db.Uuid
+  version        Int
+  amount         Decimal      @db.Decimal(18, 2)
+  currency       Currency
+  effectiveFrom  DateTime
+  effectiveTo    DateTime?
+  status         PriceStatus  @default(SCHEDULED)
+  createdAt      DateTime     @default(now())
+  createdById    String?      @db.Uuid
+  productPrice   ProductPrice @relation(fields: [productPriceId], references: [id])
+
+  @@unique([productPriceId, version])
+  @@index([productPriceId, effectiveFrom])
+}
+
+model Menu {
+  id           String        @id @default(uuid()) @db.Uuid
+  businessDate DateTime      @db.Date
+  serviceCode  String
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  versions     MenuVersion[]
+
+  @@unique([businessDate, serviceCode])
+  @@index([businessDate, serviceCode])
+}
+
+model MenuVersion {
+  id            String            @id @default(uuid()) @db.Uuid
+  menuId        String            @db.Uuid
+  version       Int
+  status        MenuVersionStatus @default(DRAFT)
+  notes         String?
+  createdById   String            @db.Uuid
+  publishedById String?           @db.Uuid
+  createdAt     DateTime          @default(now())
+  publishedAt   DateTime?
+  imageUrl      String?
+  items         MenuItem[]
+  menu          Menu              @relation(fields: [menuId], references: [id])
+  orders        Order[]
+
+  @@unique([menuId, version])
+  @@index([menuId, status])
+}
+
+model MenuItem {
+  id                String      @id @default(uuid()) @db.Uuid
+  menuVersionId     String      @db.Uuid
+  productId         String      @db.Uuid
+  quantityAvailable Int
+  quantitySold      Int         @default(0)
+  available         Boolean     @default(true)
+  position          Int         @default(0)
+  variants          Json?
+  productSnapshot   Json?
+  priceSnapshot     Json?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  quantityReserved  Int         @default(0)
+  menuVersion       MenuVersion @relation(fields: [menuVersionId], references: [id])
+  product           Product     @relation(fields: [productId], references: [id])
+
+  @@unique([menuVersionId, productId])
+  @@index([menuVersionId, available])
+  @@index([productId])
+}
+
+model Order {
+  id                  String               @id @default(uuid()) @db.Uuid
+  number              String               @unique
+  clientId            String?              @db.Uuid
+  serviceMode         ServiceMode
+  status              OrderStatus          @default(RECEIVED)
+  businessDate        DateTime             @db.Date
+  paymentRequired     Boolean              @default(true)
+  totalAmount         Decimal              @db.Decimal(18, 2)
+  currency            Currency
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  menuVersionId       String?              @db.Uuid
+  commercialTotal     Decimal              @default(0) @db.Decimal(18, 2)
+  coveredAmount       Decimal              @default(0) @db.Decimal(18, 2)
+  mealRightId         String?              @unique @db.Uuid
+  legacyDeliveryMode  String?
+  sourceChannel       OrderSourceChannel   @default(POS)
+  serviceCode         String?
+  createdById         String?              @db.Uuid
+  cashierId           String?              @db.Uuid
+  handoverAt          DateTime?
+  LegacyDelivery      LegacyDelivery?
+  LegacyKitchenTicket LegacyKitchenTicket?
+  mealConsumption     MealConsumption?
+  reservation         MealReservation?
+  cashier             User?                @relation("OrderCashier", fields: [cashierId], references: [id], onDelete: Restrict)
+  client              Client?              @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  menuVersion         MenuVersion?         @relation(fields: [menuVersionId], references: [id], onDelete: Restrict)
+  items               OrderItem[]
+  statusHistory       OrderStatusHistory[]
+  payments            Payment[]
+
+  @@index([status, createdAt])
+  @@index([clientId, createdAt])
+  @@index([clientId, businessDate, status])
+  @@index([sourceChannel, businessDate, status])
+  @@index([cashierId])
+}
+
+model OrderItem {
+  id                  String   @id @default(uuid()) @db.Uuid
+  orderId             String   @db.Uuid
+  productId           String?  @db.Uuid
+  quantity            Decimal  @db.Decimal(18, 3)
+  unitPrice           Decimal  @db.Decimal(18, 2)
+  lineTotal           Decimal  @db.Decimal(18, 2)
+  productSnapshot     Json
+  variantsSnapshot    Json?
+  supplementsSnapshot Json?
+  order               Order    @relation(fields: [orderId], references: [id])
+  product             Product? @relation(fields: [productId], references: [id])
+
+  @@index([orderId])
+}
+
+model OrderStatusHistory {
+  id         String       @id @default(uuid()) @db.Uuid
+  orderId    String       @db.Uuid
+  fromStatus OrderStatus?
+  toStatus   OrderStatus
+  reason     String?
+  actorId    String?      @db.Uuid
+  createdAt  DateTime     @default(now())
+  order      Order        @relation(fields: [orderId], references: [id])
+
+  @@index([orderId, createdAt])
+}
+
+model ExchangeRate {
+  id            String      @id @default(uuid()) @db.Uuid
+  baseCurrency  Currency
+  quoteCurrency Currency
+  rate          Decimal     @db.Decimal(20, 8)
+  effectiveFrom DateTime
+  source        String
+  status        PriceStatus @default(SCHEDULED)
+  createdById   String      @db.Uuid
+
+  @@unique([baseCurrency, quoteCurrency, effectiveFrom])
+  @@index([baseCurrency, quoteCurrency, effectiveFrom])
+}
+
+model Payment {
+  subscriptionId       String?            @db.Uuid
+  cashSessionId        String             @db.Uuid
+  id                   String             @id @default(uuid()) @db.Uuid
+  orderId              String?            @db.Uuid
+  status               PaymentStatus      @default(PENDING)
+  method               String
+  operator             String?
+  referenceCurrency    Currency
+  amountDue            Decimal            @db.Decimal(18, 2)
+  receivedAmount       Decimal            @db.Decimal(18, 2)
+  receivedCurrency     Currency
+  exchangeRateSnapshot Decimal?           @db.Decimal(20, 8)
+  changeAmount         Decimal            @default(0) @db.Decimal(18, 2)
+  changeCurrency       Currency?
+  externalReference    String?
+  confirmedAt          DateTime?
+  confirmedById        String?            @db.Uuid
+  idempotencyKey       String             @unique
+  createdAt            DateTime           @default(now())
+  movements            CashMovement[]
+  cashSession          CashSession        @relation(fields: [cashSessionId], references: [id])
+  order                Order?             @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  subscription         Subscription?      @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  references           PaymentReference[]
+  refunds              Refund[]
+
+  @@index([orderId, status])
+  @@index([externalReference])
+}
+
+model PaymentReference {
+  id        String  @id @default(uuid()) @db.Uuid
+  paymentId String  @db.Uuid
+  operator  String
+  reference String
+  payment   Payment @relation(fields: [paymentId], references: [id])
+
+  @@unique([operator, reference])
+}
+
+model CashRegister {
+  id       String        @id @default(uuid()) @db.Uuid
+  code     String        @unique
+  label    String
+  active   Boolean       @default(true)
+  sessions CashSession[]
+}
+
+model CashSession {
+  id             String            @id @default(uuid()) @db.Uuid
+  cashRegisterId String            @db.Uuid
+  cashierId      String            @db.Uuid
+  status         CashSessionStatus @default(OPEN)
+  openedAt       DateTime          @default(now())
+  closedAt       DateTime?
+  openingUsd     Decimal           @default(0) @db.Decimal(18, 2)
+  openingCdf     Decimal           @default(0) @db.Decimal(18, 2)
+  closing        CashClosing?
+  movements      CashMovement[]
+  cashRegister   CashRegister      @relation(fields: [cashRegisterId], references: [id])
+  payments       Payment[]
+  refunds        Refund[]
+
+  @@index([cashRegisterId, status])
+  @@index([cashierId, status])
+}
+
+model Refund {
+  id                String      @id @default(uuid()) @db.Uuid
+  originalPaymentId String      @db.Uuid
+  cashSessionId     String      @db.Uuid
+  amount            Decimal     @db.Decimal(18, 2)
+  currency          Currency
+  reason            String
+  createdById       String      @db.Uuid
+  createdAt         DateTime    @default(now())
+  cashSession       CashSession @relation(fields: [cashSessionId], references: [id])
+  originalPayment   Payment     @relation(fields: [originalPaymentId], references: [id])
+
+  @@index([originalPaymentId])
+  @@index([cashSessionId, createdAt])
+}
+
+model CashMovement {
+  id            String      @id @default(uuid()) @db.Uuid
+  cashSessionId String      @db.Uuid
+  paymentId     String?     @db.Uuid
+  type          String
+  amount        Decimal     @db.Decimal(18, 2)
+  currency      Currency
+  occurredAt    DateTime    @default(now())
+  sourceType    String
+  sourceId      String
+  cashSession   CashSession @relation(fields: [cashSessionId], references: [id])
+  payment       Payment?    @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@unique([sourceType, sourceId, type, currency])
+  @@index([cashSessionId, occurredAt])
+}
+
+model CashClosing {
+  id                  String      @id @default(uuid()) @db.Uuid
+  cashSessionId       String      @unique @db.Uuid
+  status              String
+  countedUsd          Decimal     @db.Decimal(18, 2)
+  countedCdf          Decimal     @db.Decimal(18, 2)
+  theoreticalSnapshot Json
+  varianceSnapshot    Json
+  submittedAt         DateTime    @default(now())
+  validatedAt         DateTime?
+  validatedById       String?     @db.Uuid
+  cashSession         CashSession @relation(fields: [cashSessionId], references: [id])
+}
+
+model ExpenseCategory {
+  id       String    @id @default(uuid()) @db.Uuid
+  code     String    @unique
+  label    String
+  expenses Expense[]
+}
+
+model Expense {
+  id               String          @id @default(uuid()) @db.Uuid
+  categoryId       String          @db.Uuid
+  cashSessionId    String?         @db.Uuid
+  beneficiary      String
+  reason           String
+  amount           Decimal         @db.Decimal(18, 2)
+  currency         Currency
+  paymentMethod    String
+  receiptObjectKey String?
+  authorizedById   String?         @db.Uuid
+  createdById      String          @db.Uuid
+  occurredAt       DateTime        @default(now())
+  category         ExpenseCategory @relation(fields: [categoryId], references: [id])
+
+  @@index([occurredAt])
+  @@index([categoryId, occurredAt])
+}
+
+model Device {
+  id             String          @id @default(uuid()) @db.Uuid
+  deviceKey      String          @unique
+  name           String
+  type           String
+  active         Boolean         @default(true)
+  lastSeenAt     DateTime?
+  syncOperations SyncOperation[]
+}
+
+model SyncOperation {
+  id             String     @id @default(uuid()) @db.Uuid
+  operationUuid  String     @unique
+  deviceId       String     @db.Uuid
+  actorId        String?    @db.Uuid
+  type           String
+  payload        Json
+  idempotencyKey String
+  status         SyncStatus @default(PENDING)
+  conflict       Json?
+  occurredAt     DateTime
+  syncedAt       DateTime?
+  device         Device     @relation(fields: [deviceId], references: [id])
+
+  @@unique([deviceId, idempotencyKey])
+  @@index([status, occurredAt])
+}
+
+model LoginAttempt {
+  key          String    @id
+  failures     Int       @default(0)
+  windowStart  DateTime  @default(now())
+  blockedUntil DateTime?
+}
+
+model Setting {
+  key           String           @id
+  value         Json
+  validated     Boolean          @default(false)
+  updatedById   String?          @db.Uuid
+  updatedAt     DateTime         @updatedAt
+  validatedById String?          @db.Uuid
+  validatedAt   DateTime?
+  histories     SettingHistory[]
+}
+
+model SettingHistory {
+  id           String   @id @default(uuid()) @db.Uuid
+  settingKey   String
+  oldValue     Json
+  newValue     Json
+  oldValidated Boolean
+  newValidated Boolean
+  changedById  String?  @db.Uuid
+  changedAt    DateTime @default(now())
+  setting      Setting  @relation(fields: [settingKey], references: [key])
+
+  @@index([settingKey, changedAt])
+}
+
+model StockItem {
+  id                String             @id @default(uuid()) @db.Uuid
+  code              String             @unique
+  name              String
+  unit              String
+  quantity          Decimal            @default(0) @db.Decimal(18, 3)
+  alertThreshold    Decimal            @default(0) @db.Decimal(18, 3)
+  active            Boolean            @default(true)
+  products          Product[]
+  purchaseLines     PurchaseLine[]
+  recipeIngredients RecipeIngredient[]
+  lots              StockLot[]
+  movements         StockMovement[]
+  conversions       UnitConversion[]
+}
+
+model StockLot {
+  id          String    @id @default(uuid()) @db.Uuid
+  stockItemId String    @db.Uuid
+  batchNumber String
+  quantity    Decimal   @default(0) @db.Decimal(18, 3)
+  expiresAt   DateTime? @db.Date
+  receivedAt  DateTime  @default(now())
+  active      Boolean   @default(true)
+  stockItem   StockItem @relation(fields: [stockItemId], references: [id])
+
+  @@unique([stockItemId, batchNumber])
+  @@index([expiresAt])
+  @@index([stockItemId, active])
+}
+
+model UnitConversion {
+  id          String    @id @default(uuid()) @db.Uuid
+  stockItemId String    @db.Uuid
+  fromUnit    String
+  factor      Decimal   @db.Decimal(18, 6)
+  stockItem   StockItem @relation(fields: [stockItemId], references: [id])
+
+  @@unique([stockItemId, fromUnit])
+}
+
+model StockMovement {
+  id          String    @id @default(uuid()) @db.Uuid
+  stockItemId String    @db.Uuid
+  delta       Decimal   @db.Decimal(18, 3)
+  type        String
+  reason      String
+  sourceId    String
+  actorId     String    @db.Uuid
+  occurredAt  DateTime  @default(now())
+  stockItem   StockItem @relation(fields: [stockItemId], references: [id])
+
+  @@unique([stockItemId, type, sourceId])
+  @@index([stockItemId, occurredAt])
+}
+
+model Supplier {
+  id        String     @id @default(uuid()) @db.Uuid
+  name      String
+  phone     String?
+  purchases Purchase[]
+}
+
+model GoodsReceipt {
+  id         String   @id @default(uuid()) @db.Uuid
+  purchaseId String   @db.Uuid
+  reference  String   @unique
+  lines      Json
+  receivedAt DateTime @default(now())
+  purchase   Purchase @relation(fields: [purchaseId], references: [id])
+}
+
+model SupplierPayment {
+  id         String   @id @default(uuid()) @db.Uuid
+  purchaseId String   @db.Uuid
+  amount     Decimal  @db.Decimal(18, 2)
+  currency   Currency
+  actorId    String   @db.Uuid
+  createdAt  DateTime @default(now())
+  purchase   Purchase @relation(fields: [purchaseId], references: [id])
+}
+
+model Recipe {
+  id       String          @id @default(uuid()) @db.Uuid
+  name     String
+  versions RecipeVersion[]
+}
+
+model RecipeVersion {
+  id            String             @id @default(uuid()) @db.Uuid
+  recipeId      String             @db.Uuid
+  version       Int
+  yieldQuantity Decimal            @db.Decimal(18, 3)
+  validated     Boolean            @default(false)
+  productions   Production[]
+  ingredients   RecipeIngredient[]
+  recipe        Recipe             @relation(fields: [recipeId], references: [id])
+
+  @@unique([recipeId, version])
+}
+
+model RecipeIngredient {
+  id              String        @id @default(uuid()) @db.Uuid
+  recipeVersionId String        @db.Uuid
+  stockItemId     String        @db.Uuid
+  quantity        Decimal       @db.Decimal(18, 3)
+  recipeVersion   RecipeVersion @relation(fields: [recipeVersionId], references: [id])
+  stockItem       StockItem     @relation(fields: [stockItemId], references: [id])
+
+  @@unique([recipeVersionId, stockItemId])
+}
+
+model Production {
+  id              String              @id @default(uuid()) @db.Uuid
+  recipeVersionId String              @db.Uuid
+  quantity        Decimal             @db.Decimal(18, 3)
+  actorId         String              @db.Uuid
+  producedAt      DateTime            @default(now())
+  forecastId      String?             @db.Uuid
+  forecast        ProductionForecast? @relation(fields: [forecastId], references: [id])
+  recipeVersion   RecipeVersion       @relation(fields: [recipeVersionId], references: [id])
+
+  @@index([forecastId])
+}
+
+model ProductionForecast {
+  id                  String       @id @default(uuid()) @db.Uuid
+  businessDate        DateTime     @db.Date
+  serviceCode         String
+  theoreticalRights   Int          @default(0)
+  reservations        Int          @default(0)
+  directOrders        Decimal      @default(0) @db.Decimal(18, 3)
+  estimatedAttendance Decimal      @default(0) @db.Decimal(18, 3)
+  calculatedQuantity  Decimal      @default(0) @db.Decimal(18, 3)
+  adjustment          Decimal      @default(0) @db.Decimal(18, 3)
+  finalQuantity       Decimal      @default(0) @db.Decimal(18, 3)
+  lostQuantity        Decimal      @default(0) @db.Decimal(18, 3)
+  adjustmentReason    String?
+  adjustedById        String?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  productions         Production[]
+
+  @@unique([businessDate, serviceCode])
+  @@index([businessDate])
+}
+
+model Inventory {
+  id            String    @id @default(uuid()) @db.Uuid
+  stockItemId   String    @db.Uuid
+  counted       Decimal   @db.Decimal(18, 3)
+  expected      Decimal   @db.Decimal(18, 3)
+  reason        String
+  createdById   String    @db.Uuid
+  validatedById String?   @db.Uuid
+  status        String    @default("PENDING")
+  createdAt     DateTime  @default(now())
+  validatedAt   DateTime?
+}
+
+model Purchase {
+  id               String            @id @default(uuid()) @db.Uuid
+  supplierId       String            @db.Uuid
+  amount           Decimal           @db.Decimal(18, 2)
+  currency         Currency
+  paidAmount       Decimal           @default(0) @db.Decimal(18, 2)
+  createdAt        DateTime          @default(now())
+  invoiceDate      DateTime?         @db.Date
+  invoiceNumber    String?
+  invoiceObjectKey String?
+  reference        String?           @unique
+  receipts         GoodsReceipt[]
+  supplier         Supplier          @relation(fields: [supplierId], references: [id])
+  lines            PurchaseLine[]
+  payments         SupplierPayment[]
+
+  @@index([supplierId, createdAt])
+}
+
+model PurchaseLine {
+  id               String    @id @default(uuid()) @db.Uuid
+  purchaseId       String    @db.Uuid
+  stockItemId      String    @db.Uuid
+  orderedQuantity  Decimal   @db.Decimal(18, 3)
+  receivedQuantity Decimal   @default(0) @db.Decimal(18, 3)
+  unit             String
+  purchase         Purchase  @relation(fields: [purchaseId], references: [id])
+  stockItem        StockItem @relation(fields: [stockItemId], references: [id])
+
+  @@unique([purchaseId, stockItemId])
+  @@index([stockItemId])
+}
+
+model LegacyClientAccount {
+  id                      String                         @id(map: "ClientAccount_pkey") @db.Uuid
+  clientId                String                         @unique @db.Uuid
+  email                   String                         @unique
+  passwordHash            String
+  type                    LegacyClientAccountType
+  verificationStatus      LegacyClientVerificationStatus @default(PENDING)
+  verifiedAt              DateTime?
+  verifiedById            String?                        @db.Uuid
+  createdAt               DateTime                       @default(now())
+  updatedAt               DateTime
+  emailVerifiedAt         DateTime?
+  Client                  Client                         @relation(fields: [clientId], references: [id], onDelete: Cascade, map: "ClientAccount_clientId_fkey")
+  LegacyClientAuthToken   LegacyClientAuthToken[]
+  LegacyClientPortalEvent LegacyClientPortalEvent[]
+  LegacyClientSession     LegacyClientSession[]
+
+  @@index([verificationStatus, createdAt])
+}
+
+/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
+model LegacyClientAccountIdentity {
+  id                 String?   @db.Uuid
+  clientId           String?   @db.Uuid
+  email              String?
+  passwordHash       String?
+  type               String?
+  verificationStatus String?
+  emailVerifiedAt    DateTime?
+  verifiedAt         DateTime?
+  verifiedById       String?   @db.Uuid
+  createdAt          DateTime?
+  updatedAt          DateTime?
+
+  @@ignore
+}
+
+model LegacyClientAuthToken {
+  id                  String              @id(map: "ClientAuthToken_pkey") @db.Uuid
+  accountId           String              @db.Uuid
+  purpose             String
+  tokenHash           String              @unique
+  expiresAt           DateTime
+  usedAt              DateTime?
+  createdAt           DateTime            @default(now())
+  LegacyClientAccount LegacyClientAccount @relation(fields: [accountId], references: [id], onDelete: Cascade, map: "ClientAuthToken_accountId_fkey")
+
+  @@index([accountId, purpose, createdAt])
+  @@index([expiresAt])
+}
+
+model LegacyClientPortalEvent {
+  id                  String              @id(map: "ClientPortalEvent_pkey") @db.Uuid
+  accountId           String              @db.Uuid
+  action              String
+  metadata            Json?
+  createdAt           DateTime            @default(now())
+  LegacyClientAccount LegacyClientAccount @relation(fields: [accountId], references: [id], onDelete: Cascade, map: "ClientPortalEvent_accountId_fkey")
+
+  @@index([accountId, createdAt])
+}
+
+model LegacyClientSession {
+  id                  String              @id(map: "ClientSession_pkey") @db.Uuid
+  accountId           String              @db.Uuid
+  tokenHash           String              @unique
+  expiresAt           DateTime
+  lastActivityAt      DateTime
+  createdAt           DateTime            @default(now())
+  LegacyClientAccount LegacyClientAccount @relation(fields: [accountId], references: [id], onDelete: Cascade, map: "ClientSession_accountId_fkey")
+
+  @@index([accountId, expiresAt])
+}
+
+model LegacyCourierProfile {
+  userId       String                    @id(map: "CourierProfile_pkey") @db.Uuid
+  availability LegacyCourierAvailability @default(UNAVAILABLE)
+  updatedAt    DateTime
+  User         User                      @relation(fields: [userId], references: [id], onDelete: Cascade, map: "CourierProfile_userId_fkey")
+}
+
+model LegacyDelivery {
+  id               String    @id(map: "Delivery_pkey") @db.Uuid
+  orderId          String    @unique @db.Uuid
+  legacyCourierId  String?   @db.Uuid
+  addressSnapshot  Json
+  status           String
+  deliveryCodeHash String?
+  assignedAt       DateTime?
+  deliveredAt      DateTime?
+  failureReason    String?
+  Order            Order     @relation(fields: [orderId], references: [id], map: "Delivery_orderId_fkey")
+
+  @@index([legacyCourierId, status], map: "LegacyDelivery_courierId_status_idx")
+}
+
+model LegacyKitchenTicket {
+  id                      String                    @id(map: "KitchenTicket_pkey") @db.Uuid
+  orderId                 String                    @unique @db.Uuid
+  number                  String                    @unique
+  renderedSnapshot        Json
+  issuedAt                DateTime                  @default(now())
+  Order                   Order                     @relation(fields: [orderId], references: [id], map: "KitchenTicket_orderId_fkey")
+  LegacyKitchenTicketItem LegacyKitchenTicketItem[]
+}
+
+model LegacyKitchenTicketItem {
+  id                  String              @id(map: "KitchenTicketItem_pkey") @db.Uuid
+  kitchenTicketId     String              @db.Uuid
+  quantity            Decimal             @db.Decimal(18, 3)
+  preparationSnapshot Json
+  LegacyKitchenTicket LegacyKitchenTicket @relation(fields: [kitchenTicketId], references: [id], map: "KitchenTicketItem_kitchenTicketId_fkey")
+}
+
+model LegacyQRCode {
+  id                  String                @id(map: "QRCode_pkey") @db.Uuid
+  clientId            String                @db.Uuid
+  tokenHash           String                @unique
+  status              QRCodeStatus          @default(ACTIVE)
+  issuedAt            DateTime              @default(now())
+  revokedAt           DateTime?
+  replacedById        String?               @unique @db.Uuid
+  tokenCiphertext     String?
+  Client              Client                @relation(fields: [clientId], references: [id], map: "QRCode_clientId_fkey")
+  LegacyQRCodeHistory LegacyQRCodeHistory[]
+
+  @@index([clientId, status])
+}
+
+model LegacyQRCodeHistory {
+  id           String       @id(map: "QRCodeHistory_pkey") @db.Uuid
+  qrCodeId     String       @db.Uuid
+  action       String
+  actorId      String?      @db.Uuid
+  metadata     Json?
+  createdAt    DateTime     @default(now())
+  LegacyQRCode LegacyQRCode @relation(fields: [qrCodeId], references: [id], map: "QRCodeHistory_qrCodeId_fkey")
+}
+
 enum UserStatus {
   ACTIVE
   DISABLED
@@ -97,908 +1116,27 @@ enum PriceStatus {
   RETIRED
 }
 
-model User {
-  id           String     @id @default(uuid()) @db.Uuid
-  username     String     @unique
-  email        String?    @unique
-  firstName    String
-  lastName     String
-  phone        String?
-  passwordHash String
-  status       UserStatus @default(ACTIVE)
-  lastLoginAt  DateTime?
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
-  roles        UserRole[]
-  sessions     Session[]
-  auditLogs    AuditLog[]
-  cashierOrders Order[]   @relation("OrderCashier")
+enum LegacyClientAccountType {
+  STUDENT_HOME
+  STUDENT_EXTERNAL
+  STAFF
 }
 
-model Role {
-  id          String           @id @default(uuid()) @db.Uuid
-  code        String           @unique
-  label       String
-  users       UserRole[]
-  permissions RolePermission[]
+enum LegacyClientVerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+  SUSPENDED
 }
 
-model Permission {
-  id    String           @id @default(uuid()) @db.Uuid
-  code  String           @unique
-  label String
-  roles RolePermission[]
+enum LegacyCourierAvailability {
+  AVAILABLE
+  UNAVAILABLE
 }
 
-model UserRole {
-  userId String @db.Uuid
-  roleId String @db.Uuid
-  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
-  role   Role   @relation(fields: [roleId], references: [id], onDelete: Restrict)
-
-  @@id([userId, roleId])
-}
-
-model RolePermission {
-  roleId       String     @db.Uuid
-  permissionId String     @db.Uuid
-  role         Role       @relation(fields: [roleId], references: [id], onDelete: Restrict)
-  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Restrict)
-
-  @@id([roleId, permissionId])
-}
-
-model Session {
-  id             String   @id @default(uuid()) @db.Uuid
-  userId         String   @db.Uuid
-  tokenHash      String   @unique
-  expiresAt      DateTime
-  lastActivityAt DateTime
-  createdAt      DateTime @default(now())
-  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId, expiresAt])
-}
-
-model AuditLog {
-  id         String   @id @default(uuid()) @db.Uuid
-  actorId    String?  @db.Uuid
-  action     String
-  entityType String
-  entityId   String?
-  oldValue   Json?
-  newValue   Json?
-  metadata   Json?
-  ip         String?
-  deviceId   String?
-  requestId  String   @default(uuid())
-  createdAt  DateTime @default(now())
-  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
-
-  @@index([entityType, entityId])
-  @@index([actorId, createdAt])
-  @@index([createdAt])
-}
-
-model IdempotencyRecord {
-  id             String   @id @default(uuid()) @db.Uuid
-  scope          String
-  key            String
-  requestHash    String
-  responseStatus Int
-  responseBody   Json
-  createdAt      DateTime @default(now())
-  expiresAt      DateTime
-
-  @@unique([scope, key])
-  @@index([expiresAt])
-}
-
-model ClientCategory {
-  id      String   @id @default(uuid()) @db.Uuid
-  code    String   @unique
-  label   String
-  active  Boolean  @default(true)
-  clients Client[]
-}
-
-model Client {
-  id                    String         @id @default(uuid()) @db.Uuid
-  categoryId            String         @db.Uuid
-  firstName             String
-  lastName              String
-  ulcNumber             String?        @unique
-  faculty               String?
-  promotion             String?
-  residency             String?
-  phone                 String?
-  email                 String?
-  photoObjectKey        String?
-  dietaryNotesEncrypted String?
-  status                ClientStatus   @default(ACTIVE)
-  mergedIntoId          String?        @db.Uuid
-  archivedAt            DateTime?
-  createdAt             DateTime       @default(now())
-  updatedAt             DateTime       @updatedAt
-  category              ClientCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  subscriptions         Subscription[]
-  orders                Order[]
-
-  @@index([lastName, firstName])
-  @@index([firstName, lastName])
-  @@index([phone])
-}
-
-model SubscriptionPlan {
-  id       String                    @id @default(uuid()) @db.Uuid
-  code     String                    @unique
-  name     String
-  active   Boolean                   @default(true)
-  versions SubscriptionPlanVersion[]
-}
-
-model SubscriptionPlanVersion {
-  id               String           @id @default(uuid()) @db.Uuid
-  planId           String           @db.Uuid
-  version          Int
-  durationDays     Int              @default(30)
-  price            Decimal          @db.Decimal(18, 2)
-  currency         Currency
-  services         Json
-  eligibilityDays  Json
-  quotaRules       Json
-  effectiveFrom    DateTime
-  effectiveTo      DateTime?
-  status           PriceStatus      @default(SCHEDULED)
-  plan             SubscriptionPlan @relation(fields: [planId], references: [id], onDelete: Restrict)
-  subscriptions    Subscription[]
-
-  @@unique([planId, version])
-  @@index([planId, effectiveFrom])
-}
-
-model Subscription {
-  payments         Payment[]
-  id               String                  @id @default(uuid()) @db.Uuid
-  clientId         String                  @db.Uuid
-  client           Client                  @relation(fields: [clientId], references: [id], onDelete: Restrict)
-  planVersionId    String                  @db.Uuid
-  status           SubscriptionStatus      @default(PENDING_PAYMENT)
-  startsOn         DateTime                @db.Date
-  endsOn           DateTime                @db.Date
-  amount           Decimal                 @db.Decimal(18, 2)
-  currency         Currency
-  paidAmount       Decimal                 @default(0) @db.Decimal(18, 2)
-  balance          Decimal                 @db.Decimal(18, 2)
-  serviceSnapshot  Json
-  legacyDeliveryIncluded Boolean @default(false)
-  renewedFromId    String?                 @db.Uuid
-  createdAt        DateTime                @default(now())
-  updatedAt        DateTime                @updatedAt
-  planVersion      SubscriptionPlanVersion @relation(fields: [planVersionId], references: [id], onDelete: Restrict)
-  rights           MealRight[]
-  renewedFrom      Subscription?           @relation("SubscriptionRenewal", fields: [renewedFromId], references: [id], onDelete: Restrict)
-  renewals         Subscription[]          @relation("SubscriptionRenewal")
-
-  suspensions SubscriptionSuspension[]
-
-  @@index([clientId, status])
-  @@index([status, startsOn, endsOn])
-}
-
-model SubscriptionSuspension {
-  id             String @id @default(uuid()) @db.Uuid
-  subscriptionId String @db.Uuid
-
-  startsOn DateTime  @db.Date
-  endsOn   DateTime? @db.Date
-
-  reason String
-
-  endDateExtended Boolean @default(false)
-
-  createdById String    @db.Uuid
-  resumedAt   DateTime?
-  resumedById String?   @db.Uuid
-
-  createdAt DateTime @default(now())
-
-  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
-
-  @@index([subscriptionId, startsOn])
-}
-
-model MealRight {
-  id             String           @id @default(uuid()) @db.Uuid
-  subscriptionId String           @db.Uuid
-  businessDate   DateTime         @db.Date
-  serviceCode    String
-  quotaGroup     String           @default("MAIN")
-  status         MealRightStatus  @default(AVAILABLE)
-  reservedAt     DateTime?
-  consumedAt     DateTime?
-  subscription   Subscription     @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
-  consumption    MealConsumption?
-  reservation    MealReservation?
-  orders         Order[]
-
-  @@unique([subscriptionId, businessDate, serviceCode, quotaGroup])
-  @@index([status, businessDate, serviceCode])
-}
-
-model MealConsumption {
-  id             String    @id @default(uuid()) @db.Uuid
-  mealRightId    String    @unique @db.Uuid
-  orderId        String?   @unique @db.Uuid
-  servedById     String    @db.Uuid
-  idempotencyKey String    @unique
-  consumedAt     DateTime  @default(now())
-  mealRight      MealRight @relation(fields: [mealRightId], references: [id], onDelete: Restrict)
-  order          Order?    @relation(fields: [orderId], references: [id], onDelete: Restrict)
-}
-
-model MealReservation {
-  id           String    @id @default(uuid()) @db.Uuid
-  mealRightId  String    @unique @db.Uuid
-  orderId      String    @unique @db.Uuid
-  expiresAt    DateTime?
-  reservedById String    @db.Uuid
-  mealRight    MealRight @relation(fields: [mealRightId], references: [id], onDelete: Restrict)
-  order        Order     @relation(fields: [orderId], references: [id], onDelete: Restrict)
-}
-
-model ProductCategory {
-  id        String   @id @default(uuid()) @db.Uuid
-  code      String   @unique
-  label     String
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now()) @updatedAt
-
-  products Product[]
-}
-
-model Product {
-  id                  String   @id @default(uuid()) @db.Uuid
-  categoryId          String   @db.Uuid
-  sku                 String?  @unique
-  name                String
-  imageUrl            String   @default("/products/placeholder.svg")
-  description         String?
-  saleUnit            String   @default("portion")
-  baseComposition     String?
-  optionsDescription  String?
-  variantsDescription String?
-  stockMode           String   @default("PRODUCTION")
-  stockItemId         String?  @db.Uuid
-  stockQuantity       Decimal  @default(1) @db.Decimal(18, 3)
-  available           Boolean  @default(true)
-  active              Boolean  @default(true)
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @default(now()) @updatedAt
-
-  category   ProductCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  stockItem  StockItem?      @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
-  prices     ProductPrice[]
-  orderItems OrderItem[]
-  menuItems  MenuItem[]
-  optionGroups ProductOptionGroup[]
-  linkedOptions ProductOption[] @relation("LinkedProductOptions")
-
-  @@index([categoryId, active, available])
-  @@index([name])
-}
-
-model ProductOptionGroup {
-  id            String   @id @default(uuid()) @db.Uuid
-  productId     String   @db.Uuid
-  name          String
-  type          ProductOptionGroupType @default(VARIANT)
-  required      Boolean  @default(false)
-  minSelections Int      @default(0)
-  maxSelections Int      @default(1)
-  position      Int      @default(0)
-  active        Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-  options       ProductOption[]
-  @@index([productId, active, position])
-}
-
-model ProductOption {
-  id             String   @id @default(uuid()) @db.Uuid
-  groupId        String   @db.Uuid
-  name           String
-  linkedProductId String?  @db.Uuid
-  priceDelta     Decimal  @default(0) @db.Decimal(18, 2)
-  currency       Currency @default(CDF)
-  position       Int      @default(0)
-  active         Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  group          ProductOptionGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  linkedProduct  Product? @relation("LinkedProductOptions", fields: [linkedProductId], references: [id], onDelete: Restrict)
-  @@index([groupId, active, position])
-  @@index([linkedProductId])
-}
-
-model ProductPrice {
-  id           String @id @default(uuid()) @db.Uuid
-  productId    String @db.Uuid
-  categoryCode String @default("ETUDIANT_EXTERNE")
-
-  product  Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
-  versions PriceVersion[]
-
-  @@unique([productId, categoryCode])
-  @@index([categoryCode])
-}
-
-model PriceVersion {
-  id             String      @id @default(uuid()) @db.Uuid
-  productPriceId String      @db.Uuid
-  version        Int
-  amount         Decimal     @db.Decimal(18, 2)
-  currency       Currency
-  effectiveFrom  DateTime
-  effectiveTo    DateTime?
-  status         PriceStatus @default(SCHEDULED)
-  createdById    String?     @db.Uuid
-  createdAt      DateTime    @default(now())
-
-  productPrice ProductPrice @relation(fields: [productPriceId], references: [id], onDelete: Restrict)
-
-  @@unique([productPriceId, version])
-  @@index([productPriceId, effectiveFrom])
-}
-
-model Menu {
-  id           String   @id @default(uuid()) @db.Uuid
-  businessDate DateTime @db.Date
-  serviceCode  String
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  versions MenuVersion[]
-
-  @@unique([businessDate, serviceCode])
-  @@index([businessDate, serviceCode])
-}
-
-model MenuVersion {
-  id            String            @id @default(uuid()) @db.Uuid
-  menuId        String            @db.Uuid
-  imageUrl      String?
-  version       Int
-  status        MenuVersionStatus @default(DRAFT)
-  notes         String?
-  createdById   String            @db.Uuid
-  publishedById String?           @db.Uuid
-  createdAt     DateTime          @default(now())
-  publishedAt   DateTime?
-
-  menu   Menu       @relation(fields: [menuId], references: [id], onDelete: Restrict)
-  items  MenuItem[]
-  orders Order[]
-
-  @@unique([menuId, version])
-  @@index([menuId, status])
-}
-
-model MenuItem {
-  id            String @id @default(uuid()) @db.Uuid
-  menuVersionId String @db.Uuid
-  productId     String @db.Uuid
-
-  quantityAvailable Int
-  quantitySold      Int     @default(0)
-  quantityReserved  Int     @default(0)
-  available         Boolean @default(true)
-  position          Int     @default(0)
-
-  variants        Json?
-  productSnapshot Json?
-  priceSnapshot   Json?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  menuVersion MenuVersion @relation(fields: [menuVersionId], references: [id], onDelete: Restrict)
-  product     Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
-
-  @@unique([menuVersionId, productId])
-  @@index([menuVersionId, available])
-  @@index([productId])
-}
-
-model Order {
-  id              String               @id @default(uuid()) @db.Uuid
-  number          String               @unique
-  clientId        String?              @db.Uuid
-  serviceMode     ServiceMode
-  legacyDeliveryMode String?
-  status          OrderStatus          @default(RECEIVED)
-  businessDate    DateTime             @db.Date
-  paymentRequired Boolean              @default(true)
-  totalAmount     Decimal              @db.Decimal(18, 2)
-  commercialTotal Decimal              @default(0) @db.Decimal(18, 2)
-  coveredAmount   Decimal              @default(0) @db.Decimal(18, 2)
-  mealRightId     String?              @unique @db.Uuid
-  sourceChannel   OrderSourceChannel   @default(POS)
-  serviceCode     String?
-  createdById     String?              @db.Uuid
-  cashierId       String?              @db.Uuid
-  handoverAt      DateTime?
-  menuVersionId   String?              @db.Uuid
-  currency        Currency
-  createdAt       DateTime             @default(now())
-  updatedAt       DateTime             @updatedAt
-  client          Client?              @relation(fields: [clientId], references: [id], onDelete: Restrict)
-  items           OrderItem[]
-  payments        Payment[]
-  statusHistory   OrderStatusHistory[]
-  mealConsumption MealConsumption?
-  reservation     MealReservation?
-  mealRight       MealRight?           @relation(fields: [mealRightId], references: [id], onDelete: Restrict)
-  cashier         User?                @relation("OrderCashier", fields: [cashierId], references: [id], onDelete: Restrict)
-
-  menuVersion     MenuVersion?         @relation(fields: [menuVersionId], references: [id], onDelete: Restrict)
-
-  @@index([status, createdAt])
-  @@index([clientId, createdAt])
-  @@index([clientId, businessDate, status])
-  @@index([sourceChannel, businessDate, status])
-  @@index([cashierId])
-}
-
-model OrderItem {
-  id                  String   @id @default(uuid()) @db.Uuid
-  orderId             String   @db.Uuid
-  productId           String?  @db.Uuid
-  quantity            Decimal  @db.Decimal(18, 3)
-  unitPrice           Decimal  @db.Decimal(18, 2)
-  lineTotal           Decimal  @db.Decimal(18, 2)
-  productSnapshot     Json
-  variantsSnapshot    Json?
-  supplementsSnapshot Json?
-  order               Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  product             Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
-
-  @@index([orderId])
-}
-
-model OrderStatusHistory {
-  id         String       @id @default(uuid()) @db.Uuid
-  orderId    String       @db.Uuid
-  fromStatus OrderStatus?
-  toStatus   OrderStatus
-  reason     String?
-  actorId    String?      @db.Uuid
-  createdAt  DateTime     @default(now())
-  order      Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
-
-  @@index([orderId, createdAt])
-}
-
-model ExchangeRate {
-  id            String      @id @default(uuid()) @db.Uuid
-  baseCurrency  Currency
-  quoteCurrency Currency
-  rate          Decimal     @db.Decimal(20, 8)
-  effectiveFrom DateTime
-  source        String
-  status        PriceStatus @default(SCHEDULED)
-  createdById   String      @db.Uuid
-
-  @@unique([baseCurrency, quoteCurrency, effectiveFrom])
-  @@index([baseCurrency, quoteCurrency, effectiveFrom])
-}
-
-model Payment {
-  subscriptionId       String?            @db.Uuid
-  subscription         Subscription?      @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
-  cashSessionId        String             @db.Uuid
-  cashSession          CashSession        @relation(fields: [cashSessionId], references: [id], onDelete: Restrict)
-  id                   String             @id @default(uuid()) @db.Uuid
-  orderId              String?            @db.Uuid
-  status               PaymentStatus      @default(PENDING)
-  method               String
-  operator             String?
-  refunds              Refund[]
-  referenceCurrency    Currency
-  amountDue            Decimal            @db.Decimal(18, 2)
-  receivedAmount       Decimal            @db.Decimal(18, 2)
-  receivedCurrency     Currency
-  exchangeRateSnapshot Decimal?           @db.Decimal(20, 8)
-  changeAmount         Decimal            @default(0) @db.Decimal(18, 2)
-  changeCurrency       Currency?
-  externalReference    String?
-  confirmedAt          DateTime?
-  confirmedById        String?            @db.Uuid
-  idempotencyKey       String             @unique
-  createdAt            DateTime           @default(now())
-  order                Order?             @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  references           PaymentReference[]
-  movements            CashMovement[]
-
-  @@index([orderId, status])
-  @@index([externalReference])
-}
-
-model PaymentReference {
-  id        String  @id @default(uuid()) @db.Uuid
-  paymentId String  @db.Uuid
-  operator  String
-  reference String
-  payment   Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-
-  @@unique([operator, reference])
-}
-
-model CashRegister {
-  id       String        @id @default(uuid()) @db.Uuid
-  code     String        @unique
-  label    String
-  active   Boolean       @default(true)
-  sessions CashSession[]
-}
-
-model CashSession {
-  payments       Payment[]
-  id             String            @id @default(uuid()) @db.Uuid
-  cashRegisterId String            @db.Uuid
-  cashierId      String            @db.Uuid
-  status         CashSessionStatus @default(OPEN)
-  openedAt       DateTime          @default(now())
-  closedAt       DateTime?
-  openingUsd     Decimal           @default(0) @db.Decimal(18, 2)
-  openingCdf     Decimal           @default(0) @db.Decimal(18, 2)
-  cashRegister   CashRegister      @relation(fields: [cashRegisterId], references: [id], onDelete: Restrict)
-  movements      CashMovement[]
-  closing        CashClosing?
-  refunds        Refund[]
-
-  @@index([cashRegisterId, status])
-  @@index([cashierId, status])
-}
-
-model Refund {
-  id                String   @id @default(uuid()) @db.Uuid
-  originalPaymentId String   @db.Uuid
-  cashSessionId     String   @db.Uuid
-  amount            Decimal  @db.Decimal(18, 2)
-  currency          Currency
-  reason            String
-  createdById       String   @db.Uuid
-  createdAt         DateTime @default(now())
-
-  originalPayment Payment     @relation(fields: [originalPaymentId], references: [id], onDelete: Restrict)
-  cashSession     CashSession @relation(fields: [cashSessionId], references: [id], onDelete: Restrict)
-
-  @@index([originalPaymentId])
-  @@index([cashSessionId, createdAt])
-}
-
-model CashMovement {
-  id            String      @id @default(uuid()) @db.Uuid
-  cashSessionId String      @db.Uuid
-  paymentId     String?     @db.Uuid
-  type          String
-  amount        Decimal     @db.Decimal(18, 2)
-  currency      Currency
-  occurredAt    DateTime    @default(now())
-  sourceType    String
-  sourceId      String
-  cashSession   CashSession @relation(fields: [cashSessionId], references: [id], onDelete: Restrict)
-  payment       Payment?    @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-
-  @@unique([sourceType, sourceId, type, currency])
-  @@index([cashSessionId, occurredAt])
-}
-
-model CashClosing {
-  id                  String      @id @default(uuid()) @db.Uuid
-  cashSessionId       String      @unique @db.Uuid
-  status              String
-  countedUsd          Decimal     @db.Decimal(18, 2)
-  countedCdf          Decimal     @db.Decimal(18, 2)
-  theoreticalSnapshot Json
-  varianceSnapshot    Json
-  submittedAt         DateTime    @default(now())
-  validatedAt         DateTime?
-  validatedById       String?     @db.Uuid
-  cashSession         CashSession @relation(fields: [cashSessionId], references: [id], onDelete: Restrict)
-}
-
-model ExpenseCategory {
-  id       String    @id @default(uuid()) @db.Uuid
-  code     String    @unique
-  label    String
-  expenses Expense[]
-}
-
-model Expense {
-  id               String          @id @default(uuid()) @db.Uuid
-  categoryId       String          @db.Uuid
-  cashSessionId    String?         @db.Uuid
-  beneficiary      String
-  reason           String
-  amount           Decimal         @db.Decimal(18, 2)
-  currency         Currency
-  paymentMethod    String
-  receiptObjectKey String?
-  authorizedById   String?         @db.Uuid
-  createdById      String          @db.Uuid
-  occurredAt       DateTime        @default(now())
-  category         ExpenseCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-
-  @@index([occurredAt])
-  @@index([categoryId, occurredAt])
-}
-
-model Device {
-  id             String          @id @default(uuid()) @db.Uuid
-  deviceKey      String          @unique
-  name           String
-  type           String
-  active         Boolean         @default(true)
-  lastSeenAt     DateTime?
-  syncOperations SyncOperation[]
-}
-
-model SyncOperation {
-  id             String     @id @default(uuid()) @db.Uuid
-  operationUuid  String     @unique
-  deviceId       String     @db.Uuid
-  actorId        String?    @db.Uuid
-  type           String
-  payload        Json
-  idempotencyKey String
-  status         SyncStatus @default(PENDING)
-  conflict       Json?
-  occurredAt     DateTime
-  syncedAt       DateTime?
-  device         Device     @relation(fields: [deviceId], references: [id], onDelete: Restrict)
-
-  @@unique([deviceId, idempotencyKey])
-  @@index([status, occurredAt])
-}
-
-model LoginAttempt {
-  key          String    @id
-  failures     Int       @default(0)
-  windowStart  DateTime  @default(now())
-  blockedUntil DateTime?
-}
-
-model Setting {
-  key           String           @id
-  value         Json
-  validated     Boolean          @default(false)
-  updatedById   String?          @db.Uuid
-  validatedById String?          @db.Uuid
-  validatedAt   DateTime?
-  updatedAt     DateTime         @updatedAt
-  histories     SettingHistory[]
-}
-
-model SettingHistory {
-  id           String   @id @default(uuid()) @db.Uuid
-  settingKey   String
-  oldValue     Json
-  newValue     Json
-  oldValidated Boolean
-  newValidated Boolean
-  changedById  String?  @db.Uuid
-  changedAt    DateTime @default(now())
-
-  setting Setting @relation(fields: [settingKey], references: [key], onDelete: Restrict)
-
-  @@index([settingKey, changedAt])
-}
-
-model StockItem {
-  products          Product[]
-  id                String             @id @default(uuid()) @db.Uuid
-  code              String             @unique
-  name              String
-  unit              String
-  quantity          Decimal            @default(0) @db.Decimal(18, 3)
-  alertThreshold    Decimal            @default(0) @db.Decimal(18, 3)
-  active            Boolean            @default(true)
-  lots              StockLot[]
-  movements         StockMovement[]
-  conversions       UnitConversion[]
-  recipeIngredients RecipeIngredient[]
-  purchaseLines     PurchaseLine[]
-}
-
-model StockLot {
-  id          String    @id @default(uuid()) @db.Uuid
-  stockItemId String    @db.Uuid
-  batchNumber String
-  quantity    Decimal   @default(0) @db.Decimal(18, 3)
-  expiresAt   DateTime? @db.Date
-  receivedAt  DateTime  @default(now())
-  active      Boolean   @default(true)
-
-  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
-
-  @@unique([stockItemId, batchNumber])
-  @@index([expiresAt])
-  @@index([stockItemId, active])
-}
-
-model UnitConversion {
-  id          String    @id @default(uuid()) @db.Uuid
-  stockItemId String    @db.Uuid
-  fromUnit    String
-  factor      Decimal   @db.Decimal(18, 6)
-  stockItem   StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
-
-  @@unique([stockItemId, fromUnit])
-}
-
-model StockMovement {
-  id          String    @id @default(uuid()) @db.Uuid
-  stockItemId String    @db.Uuid
-  delta       Decimal   @db.Decimal(18, 3)
-  type        String
-  reason      String
-  sourceId    String
-  actorId     String    @db.Uuid
-  occurredAt  DateTime  @default(now())
-  stockItem   StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
-
-  @@unique([stockItemId, type, sourceId])
-  @@index([stockItemId, occurredAt])
-}
-
-model Supplier {
-  id        String     @id @default(uuid()) @db.Uuid
-  name      String
-  phone     String?
-  purchases Purchase[]
-}
-
-model GoodsReceipt {
-  id         String   @id @default(uuid()) @db.Uuid
-  purchaseId String   @db.Uuid
-  reference  String   @unique
-  lines      Json
-  receivedAt DateTime @default(now())
-  purchase   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
-}
-
-model SupplierPayment {
-  id         String   @id @default(uuid()) @db.Uuid
-  purchaseId String   @db.Uuid
-  amount     Decimal  @db.Decimal(18, 2)
-  currency   Currency
-  actorId    String   @db.Uuid
-  createdAt  DateTime @default(now())
-  purchase   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
-}
-
-model Recipe {
-  id       String          @id @default(uuid()) @db.Uuid
-  name     String
-  versions RecipeVersion[]
-}
-
-model RecipeVersion {
-  id            String             @id @default(uuid()) @db.Uuid
-  recipeId      String             @db.Uuid
-  version       Int
-  yieldQuantity Decimal            @db.Decimal(18, 3)
-  validated     Boolean            @default(false)
-  recipe        Recipe             @relation(fields: [recipeId], references: [id], onDelete: Restrict)
-  ingredients   RecipeIngredient[]
-  productions   Production[]
-
-  @@unique([recipeId, version])
-}
-
-model RecipeIngredient {
-  id              String        @id @default(uuid()) @db.Uuid
-  recipeVersionId String        @db.Uuid
-  stockItemId     String        @db.Uuid
-  quantity        Decimal       @db.Decimal(18, 3)
-  recipeVersion   RecipeVersion @relation(fields: [recipeVersionId], references: [id], onDelete: Restrict)
-  stockItem       StockItem     @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
-
-  @@unique([recipeVersionId, stockItemId])
-}
-
-model Production {
-  id              String   @id @default(uuid()) @db.Uuid
-  recipeVersionId String   @db.Uuid
-  forecastId      String?  @db.Uuid
-  quantity        Decimal  @db.Decimal(18, 3)
-  actorId         String   @db.Uuid
-  producedAt      DateTime @default(now())
-
-  recipeVersion RecipeVersion       @relation(fields: [recipeVersionId], references: [id], onDelete: Restrict)
-  forecast      ProductionForecast? @relation(fields: [forecastId], references: [id], onDelete: SetNull)
-
-  @@index([forecastId])
-}
-
-model ProductionForecast {
-  id String @id @default(uuid()) @db.Uuid
-
-  businessDate DateTime @db.Date
-  serviceCode  String
-
-  theoreticalRights Int     @default(0)
-  reservations      Int     @default(0)
-  directOrders      Decimal @default(0) @db.Decimal(18, 3)
-
-  estimatedAttendance Decimal @default(0) @db.Decimal(18, 3)
-
-  calculatedQuantity Decimal @default(0) @db.Decimal(18, 3)
-  adjustment         Decimal @default(0) @db.Decimal(18, 3)
-  finalQuantity      Decimal @default(0) @db.Decimal(18, 3)
-
-  lostQuantity Decimal @default(0) @db.Decimal(18, 3)
-
-  adjustmentReason String?
-  adjustedById     String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  productions Production[]
-
-  @@unique([businessDate, serviceCode])
-  @@index([businessDate])
-}
-
-model Inventory {
-  id            String    @id @default(uuid()) @db.Uuid
-  stockItemId   String    @db.Uuid
-  counted       Decimal   @db.Decimal(18, 3)
-  expected      Decimal   @db.Decimal(18, 3)
-  reason        String
-  createdById   String    @db.Uuid
-  validatedById String?   @db.Uuid
-  status        String    @default("PENDING")
-  createdAt     DateTime  @default(now())
-  validatedAt   DateTime?
-}
-
-model Purchase {
-  id               String    @id @default(uuid()) @db.Uuid
-  supplierId       String    @db.Uuid
-  reference        String?   @unique
-  invoiceNumber    String?
-  invoiceDate      DateTime? @db.Date
-  invoiceObjectKey String?
-  amount           Decimal   @db.Decimal(18, 2)
-  currency         Currency
-  paidAmount       Decimal   @default(0) @db.Decimal(18, 2)
-  createdAt        DateTime  @default(now())
-
-  supplier Supplier          @relation(fields: [supplierId], references: [id], onDelete: Restrict)
-  lines    PurchaseLine[]
-  receipts GoodsReceipt[]
-  payments SupplierPayment[]
-
-  @@index([supplierId, createdAt])
-}
-
-model PurchaseLine {
-  id               String  @id @default(uuid()) @db.Uuid
-  purchaseId       String  @db.Uuid
-  stockItemId      String  @db.Uuid
-  orderedQuantity  Decimal @db.Decimal(18, 3)
-  receivedQuantity Decimal @default(0) @db.Decimal(18, 3)
-  unit             String
-
-  purchase  Purchase  @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
-  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
-
-  @@unique([purchaseId, stockItemId])
-  @@index([stockItemId])
+enum QRCodeStatus {
+  ACTIVE
+  REVOKED
+  REPLACED
+  EXPIRED
 }
