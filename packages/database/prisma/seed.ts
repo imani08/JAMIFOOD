@@ -5,11 +5,12 @@ async function main() {
   if (process.env.NODE_ENV === 'production' || process.env.SEED_DEMO !== 'true' || !process.env.DEMO_PASSWORD || process.env.DEMO_PASSWORD.length < 12) throw new Error('Seed réservé à DEMO avec mot de passe externe de 12 caractères minimum.');
   const rolePermissions: Record<string,string[]> = {
     RESPONSABLE_RESTAURANT: ['auth.session','auth.password-change','users.read','users.create','users.update','users.disable','clients.read','clients.create','clients.update','clients.archive','subscriptions.read','subscriptions.create','subscriptions.suspend','subscriptions.cancel','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','cash.refund','cash.adjust','sales.create','sales.read','orders.create','orders.read','orders.manage','orders.cancel','meal.correct','meal.exception','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory','menus.read','menus.write','menus.manage','menus.publish'],
-    GESTIONNAIRE: ['auth.session','auth.password-change','clients.read','clients.create','clients.update','clients.archive','subscriptions.read','subscriptions.create','subscriptions.suspend','subscriptions.cancel','orders.manage','orders.cancel','sales.read','cash.read','stock.read','reports.read','menus.read'],
-    CAISSIER: ['auth.session','auth.password-change','sales.create','sales.read','orders.read','cash.open','cash.close','cash.read','sales.receipt','menus.read'],
+    GESTIONNAIRE: ['auth.session','auth.password-change','clients.read','clients.create','clients.update','clients.archive','subscriptions.read','subscriptions.create','subscriptions.suspend','subscriptions.cancel','orders.manage','orders.cancel','sales.read','cash.read','cash.open','cash.close','stock.read','reports.read','menus.read'],
+    CAISSIER: ['auth.session','auth.password-change','sales.create'],
     ADMIN_TECHNIQUE: ['auth.session','auth.password-change','users.read','users.create','users.update','users.disable'],
   };  for (const [code,permissions] of Object.entries(rolePermissions)) {
     const role=await db.role.upsert({where:{code},update:{},create:{code,label:code}});
+    if(code==='CAISSIER'){const forbidden=await db.permission.findMany({where:{code:{notIn:permissions}},select:{id:true}});await db.rolePermission.deleteMany({where:{roleId:role.id,permissionId:{in:forbidden.map(permission=>permission.id)}}});}
     for (const permissionCode of permissions) {const permission=await db.permission.findUniqueOrThrow({where:{code:permissionCode}});await db.rolePermission.upsert({where:{roleId_permissionId:{roleId:role.id,permissionId:permission.id}},update:{},create:{roleId:role.id,permissionId:permission.id}});}
   }
   const salt=randomBytes(16).toString('hex'); const passwordHash='scrypt$'+salt+'$'+scryptSync(process.env.DEMO_PASSWORD,salt,64).toString('hex');
@@ -26,6 +27,7 @@ for (const [username, roleCode] of demoUsers) {
   }
   const admin=await db.user.findFirstOrThrow({where:{roles:{some:{role:{code:'RESPONSABLE_RESTAURANT'}}}}});
   for(const [code,label] of [['ETUDIANT_HOME','Étudiant résident Home'],['ETUDIANT_EXTERNE','Étudiant externe'],['PERSONNEL_ULC','Personnel ULC']]) await db.clientCategory.upsert({where:{code},update:{},create:{code,label}});
+  await db.setting.upsert({where:{key:'pos_anonymous_category'},update:{},create:{key:'pos_anonymous_category',value:{categoryCode:'ETUDIANT_EXTERNE'},validated:false}});
   for(const [code,name,price,services,serviceQuotas] of [['PREMIUM','Premium intégral','140',['BREAKFAST','LUNCH','DINNER'],{BREAKFAST:1,LUNCH:1,DINNER:1}],['COMBINEE','Combinée','110',['LUNCH','DINNER'],{LUNCH:1,DINNER:1}],['REPAS','Repas','60',['MAIN'],{MAIN:1}],['BREAKFAST','Petit-déjeuner','40',['BREAKFAST'],{BREAKFAST:1}]] as const) {
     const plan=await db.subscriptionPlan.upsert({where:{code},update:{},create:{code,name}});
     await db.subscriptionPlanVersion.upsert({where:{planId_version:{planId:plan.id,version:1}},update:{},create:{planId:plan.id,version:1,price,currency:'USD',services:[...services],eligibilityDays:[1,2,3,4,5,6],quotaRules:{pendingValidation:false,days:30,serviceQuotas,demo:false},effectiveFrom:new Date('2026-01-01'),status:'ACTIVE'}});

@@ -88,7 +88,7 @@ export async function finishPayment(tx: Tx, paymentId: string, actorId: string) 
     } else {
       const paid = await tx.payment.aggregate({ where: { orderId: order.id, status: 'CONFIRMED' }, _sum: { amountDue: true } });
       const totalPaid = paid._sum.amountDue ?? new Decimal(0);
-      if (totalPaid.gte(order.totalAmount)) {
+      if (totalPaid.gte(order.totalAmount.sub(order.coveredAmount))) {
         const stockTotals = new Map<string, Prisma.Decimal>();
         const lines = await tx.orderItem.findMany({ where: { orderId: order.id } });
         for (const line of lines) {
@@ -125,53 +125,140 @@ export async function finishPayment(tx: Tx, paymentId: string, actorId: string) 
 }@Injectable()
 export class OrdersService {
   constructor(private readonly prisma: PrismaService) {}
+  handoverPos(orderId: string, cashSessionId: string, key: string | undefined, actorId: string) {
+    uuid.parse(orderId);
+    return mutate(this.prisma, 'orders.pos-handover', key, actorId, { orderId, cashSessionId }, async tx => {
+      await lockOrder(tx, orderId);
+      await lockCash(tx, cashSessionId, actorId);
+      const order = await tx.order.findUnique({ where: { id: orderId }, include: { client: true, payments: true, reservation: { include: { mealRight: true } }, items: true, cashier: { select: { firstName: true, lastName: true } } } });
+      if (order?.status === 'SERVED' && order.handoverAt) throw new DomainError('ORDER_ALREADY_SERVED', 'REPAS DÉJÀ REMIS.', 409);
+      if (!order || order.sourceChannel !== 'POS' || !order.clientId || order.status !== 'READY') throw new DomainError('ORDER_NOT_READY', 'Cette commande abonné n’est pas prête à être remise.', 409);
+      if (order.payments.some(payment => payment.status === 'PENDING')) throw new DomainError('PAYMENT_PENDING', 'Un paiement attend confirmation.', 409);
+      const paid = order.payments.filter(payment => payment.status === 'CONFIRMED').reduce((sum, payment) => sum.add(payment.amountDue), new Decimal(0));
+      if (order.totalAmount.sub(order.coveredAmount).sub(paid).gt(0)) throw new DomainError('PAYMENT_REQUIRED', 'Encaissez le montant restant avant la remise.', 409);
+      const reservation = order.reservation;
+      if (reservation) {
+        const right = await tx.mealRight.findUniqueOrThrow({ where: { id: reservation.mealRightId } });
+        if (right.status === 'CONSUMED') throw new DomainError('MEAL_RIGHT_CONSUMED', 'Le droit a déjà été consommé.', 409);
+        if (right.status !== 'RESERVED') throw new DomainError('MEAL_RIGHT_UNAVAILABLE', 'Le droit n’est plus réservé pour cette commande.', 409);
+        const subscription = await tx.subscription.findUniqueOrThrow({ where: { id: right.subscriptionId }, include: { planVersion: true } });
+        const today = localDate();
+        const start = subscription.startsOn.toISOString().slice(0, 10);
+        const end = subscription.endsOn.toISOString().slice(0, 10);
+        if (subscription.status === 'SUSPENDED') throw new DomainError('SUBSCRIPTION_SUSPENDED', 'Abonnement suspendu.', 409);
+        if (subscription.status === 'CANCELLED') throw new DomainError('SUBSCRIPTION_CANCELLED', 'Abonnement annulé.', 409);
+        if (subscription.balance.gt(0)) throw new DomainError('SUBSCRIPTION_PAYMENT_BLOCKING', 'Paiement de l’abonnement requis.', 409);
+        if (start > today) throw new DomainError('SUBSCRIPTION_SCHEDULED', 'Abonnement planifié : période non commencée.', 409);
+        if (end < today) throw new DomainError('SUBSCRIPTION_EXPIRED', 'Abonnement expiré.', 409);
+        const services = Array.isArray(subscription.planVersion.services) ? subscription.planVersion.services as string[] : [];
+        const serviceCovered = right.serviceCode === 'MAIN' ? services.includes('MAIN') : services.includes(right.serviceCode);
+        if (!serviceCovered) throw new DomainError('SERVICE_NOT_COVERED', `Cette formule ne couvre pas le service ${order.serviceCode ?? right.serviceCode}.`, 409);
+        await consumeReservedMealRight(tx, { mealRightId: right.id, orderId, actorId, idempotencyKey: key! });
+      }
+      if (!order.payments.some(payment => payment.status === 'CONFIRMED')) {
+        const stockTotals = new Map<string, Prisma.Decimal>();
+        for (const line of order.items) {
+          const snapshot = line.productSnapshot as { stockMode?: string; stockItemId?: string | null; stockQuantity?: string };
+          if (snapshot.stockMode === 'DIRECT' && snapshot.stockItemId && snapshot.stockQuantity) stockTotals.set(snapshot.stockItemId, (stockTotals.get(snapshot.stockItemId) ?? new Decimal(0)).add(line.quantity.mul(snapshot.stockQuantity)));
+          const extras = Array.isArray(line.supplementsSnapshot) ? line.supplementsSnapshot as { quantity?: number; linkedStock?: { stockMode?: string; stockItemId?: string | null; stockQuantity?: string } }[] : [];
+          for (const extra of extras) if (extra.linkedStock?.stockMode === 'DIRECT' && extra.linkedStock.stockItemId && extra.linkedStock.stockQuantity) stockTotals.set(extra.linkedStock.stockItemId, (stockTotals.get(extra.linkedStock.stockItemId) ?? new Decimal(0)).add(line.quantity.mul(extra.quantity ?? 1).mul(extra.linkedStock.stockQuantity)));
+        }
+        for (const [stockId, quantity] of [...stockTotals].sort(([a], [b]) => a.localeCompare(b))) await move(tx, stockId, quantity.negated(), 'DIRECT_SALE', order.id, `Remise abonné : ${order.number}`, actorId);
+      }
+      const handoverAt = new Date();
+      await tx.order.update({ where: { id: orderId }, data: { status: 'SERVED', cashierId: actorId, handoverAt, ...(reservation ? { mealConsumption: { create: { mealRightId: reservation.mealRightId, servedById: actorId, idempotencyKey: key!, consumedAt: handoverAt } } } : {}), statusHistory: { create: { fromStatus: 'READY', toStatus: 'SERVED', actorId } } } });
+      await audit(tx, actorId, 'ORDER_HANDED_OVER', 'Order', orderId, { cashierId: actorId, handoverAt: handoverAt.toISOString(), amountDue: '0' });
+      return { id: orderId, number: order.number, status: 'SERVED', receiptUrl: `/orders/${orderId}/receipt` };
+    });
+  }
+  addPickupExtras(orderId: string, input: unknown, key: string | undefined, actorId: string) {
+    uuid.parse(orderId);
+    const body = z.object({ cashSessionId: uuid, items: z.array(z.object({ productId: uuid, quantity: z.number().int().min(1).max(100), selections: z.record(z.array(uuid).max(20)).optional() }).strict()).min(1).max(50) }).strict().parse(input);
+    return mutate(this.prisma, 'orders.pickup-extras', key, actorId, { orderId, ...body }, async tx => {
+      await lockCash(tx, body.cashSessionId, actorId);
+      await lockOrder(tx, orderId);
+      const order = await tx.order.findUnique({ where: { id: orderId }, include: { client: { include: { category: true } }, payments: true } });
+      if (!order || order.sourceChannel !== 'WHATSAPP' || order.status !== 'READY' || !order.client) throw new DomainError('ORDER_NOT_READY', 'Cette commande n’est plus disponible pour ajouter des extras.', 409);
+      if (order.payments.some(payment => payment.status === 'PENDING')) throw new DomainError('PAYMENT_PENDING', 'Vérifiez le paiement en attente avant de modifier les extras.', 409);
+      const now = new Date();
+      const products = await tx.product.findMany({
+        where: { id: { in: body.items.map(item => item.productId) }, active: true, available: true },
+        include: {
+          category: true, stockItem: true,
+          prices: { where: { categoryCode: order.client.category.code }, include: { versions: { where: { currency: order.currency, status: 'ACTIVE', effectiveFrom: { lte: now }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }] }, orderBy: { effectiveFrom: 'desc' }, take: 1 } } },
+          optionGroups: {
+            where: { active: true }, orderBy: { position: 'asc' },
+            include: {
+              options: {
+                where: { active: true }, orderBy: { position: 'asc' },
+                include: {
+                  linkedProduct: {
+                    include: {
+                      stockItem: true,
+                      prices: {
+                        where: { categoryCode: order.client.category.code },
+                        include: { versions: { where: { currency: order.currency, status: 'ACTIVE', effectiveFrom: { lte: now }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }] }, orderBy: { effectiveFrom: 'desc' }, take: 1 } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+      const lines = body.items.map(item => {
+        const product = products.find(row => row.id === item.productId);
+        const price = product?.prices.flatMap(value => value.versions).find(value => !value.effectiveTo || value.effectiveTo > now);
+        if (!product || !price) throw new DomainError('PRICE_UNAVAILABLE', 'Un extra est indisponible ou son tarif n’est pas configuré.', 409);
+        const selections = item.selections ?? {};
+        const supplements: { id: string; name: string; quantity: number; unitPrice: string; linkedStock?: { stockMode: string; stockItemId: string | null; stockQuantity: string } }[] = [];
+        for (const group of product.optionGroups) {
+          const selected = selections[group.id] ?? [];
+          if (selected.length < Math.max(group.minSelections, group.required ? 1 : 0) || selected.length > group.maxSelections) throw new DomainError('PRODUCT_OPTIONS_INVALID', `Options invalides pour ${group.name}.`, 400);
+          if (selected.some(id => !group.options.some(option => option.id === id))) throw new DomainError('PRODUCT_OPTION_UNKNOWN', 'Une option sélectionnée est inconnue.', 400);
+          for (const option of group.options.filter(value => selected.includes(value.id))) {
+            const linked = option.linkedProduct;
+            const linkedPrice = linked?.prices.flatMap(value => value.versions).find(value => !value.effectiveTo || value.effectiveTo > now);
+            if (linked && (!linked.active || !linked.available || (linked.stockMode === 'DIRECT' && (!linked.stockItem?.active || linked.stockItem.quantity.lt(linked.stockQuantity.mul(item.quantity))))) ) throw new DomainError('PRODUCT_OPTION_OUT_OF_STOCK', `${linked.name} est indisponible.`, 409);
+            supplements.push({ id: option.id, name: option.name, quantity: 1, unitPrice: (linkedPrice?.amount ?? option.priceDelta).toString(), linkedStock: linked ? { stockMode: linked.stockMode, stockItemId: linked.stockItemId, stockQuantity: linked.stockQuantity.toString() } : undefined });
+          }
+        }
+        if (Object.keys(selections).some(groupId => !product.optionGroups.some(group => group.id === groupId))) throw new DomainError('PRODUCT_OPTION_UNKNOWN', 'Un groupe d’options est inconnu.', 400);
+        if (product.stockMode === 'DIRECT' && (!product.stockItem?.active || product.stockItem.quantity.lt(product.stockQuantity.mul(item.quantity)))) throw new DomainError('PRODUCT_OUT_OF_STOCK', `${product.name} est en rupture de stock.`, 409);
+        const unitPrice = new Decimal(price.amount).add(supplements.reduce((sum, option) => sum.add(option.unitPrice), new Decimal(0)));
+        return { productId: product.id, quantity: new Decimal(item.quantity), unitPrice, lineTotal: unitPrice.mul(item.quantity), supplementsSnapshot: supplements.length ? supplements : undefined, productSnapshot: { name: product.name, stockMode: product.stockMode, stockItemId: product.stockItemId, stockQuantity: product.stockQuantity.toString(), productCategoryCode: product.category.code, productCategoryLabel: product.category.label, priceVersionId: price.id, clientCategoryCode: order.client!.category.code, pickupExtra: true } };
+      });
+      const extraTotal = lines.reduce((sum, line) => sum.add(line.lineTotal), new Decimal(0));
+      const updated = await tx.order.update({ where: { id: orderId }, data: { totalAmount: { increment: extraTotal }, commercialTotal: { increment: extraTotal }, items: { create: lines } } });
+      await audit(tx, actorId, 'PICKUP_EXTRAS_ADDED', 'Order', orderId, { amount: extraTotal.toString(), items: body.items.length });
+      return updated;
+    });
+  }
   create(input: unknown, key: string | undefined, actorId: string) {
     const data = createOrderSchema.parse(input);
     return mutate(this.prisma, 'orders.create', key, actorId, data, async tx => {
+      if (data.clientId && !data.serviceCode) throw new DomainError('SERVICE_REQUIRED', 'Choisissez le service demandé par l’abonné.', 400);
+      const subscriber = data.clientId ? await tx.client.findFirst({ where: { id: data.clientId, archivedAt: null }, include: { category: true } }) : null;
+      if (data.clientId && !subscriber) throw new DomainError('SUBSCRIBER_NOT_FOUND', 'Abonné introuvable ou archivé.', 404);
+      let priceCategoryCode = subscriber?.category.code;
+      if (!priceCategoryCode) {
+        const setting = await tx.setting.findUnique({ where: { key: 'pos_anonymous_category' } });
+        const configured = setting?.validated ? z.object({ categoryCode: z.string().min(1).max(50) }).safeParse(setting.value) : null;
+        if (!configured?.success) throw new DomainError('POS_PRICE_CATEGORY_NOT_CONFIGURED', 'La catégorie de tarification comptoir doit être configurée et validée par la Responsable.', 409);
+        if (data.categoryCode !== configured.data.categoryCode) throw new DomainError('POS_PRICE_CATEGORY_INVALID', 'La catégorie de tarification comptoir fournie n’est pas autorisée.', 403);
+        priceCategoryCode = configured.data.categoryCode;
+      }
       if(data.menuVersionId) await tx.$queryRaw`SELECT id FROM "MenuVersion" WHERE id = ${data.menuVersionId}::uuid FOR UPDATE`;
       const menuVersion = data.menuVersionId ? await tx.menuVersion.findUnique({where:{id:data.menuVersionId},include:{menu:true,items:true}}) : null;
       if (data.menuVersionId && (!menuVersion || menuVersion.status !== 'PUBLISHED' || menuVersion.menu.businessDate.toISOString().slice(0,10) !== localDate())) throw new DomainError('MENU_UNAVAILABLE', 'Ce menu n’est plus publié pour aujourd’hui. Actualisez le POS.');
-      if (!await tx.clientCategory.findFirst({ where: { code: data.categoryCode, active: true } })) throw new DomainError('CATEGORY_INVALID', 'Catégorie non autorisée.', 400);
-      if (data.clientId) {
-  const client =
-    await tx.client.findUnique({
-      where: {
-        id: data.clientId,
-      },
-
-      include: {
-        category: true,
-      },
-    });
-
-  if (
-    !client ||
-    client.status !== 'ACTIVE'
-  ) {
-    throw new DomainError(
-      'CLIENT_NOT_FOUND',
-      'Client actif introuvable.',
-      404,
-    );
-  }
-
-  if (
-    client.category.code !==
-    data.categoryCode
-  ) {
-    throw new DomainError(
-      'CATEGORY_MISMATCH',
-      'La catégorie sélectionnée ne correspond pas au client.',
-      400,
-    );
-  }
-}
+      if (!await tx.clientCategory.findFirst({ where: { code: priceCategoryCode, active: true } })) throw new DomainError('CATEGORY_INVALID', 'Catégorie de tarification non autorisée.', 400);
 const products = await tx.product.findMany({
   where: { id: { in: data.items.map(item => item.productId) }, active: true },
   include: {
     category: true,
-    optionGroups: { where: { active: true }, orderBy: { position: 'asc' }, include: { options: { where: { active: true }, orderBy: { position: 'asc' }, include: { linkedProduct: { include: { stockItem: true, prices: { where: { categoryCode: data.categoryCode }, include: { versions: { where: { currency: data.currency, status: 'ACTIVE', effectiveFrom: { lte: new Date() }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: new Date() } }] }, orderBy: { effectiveFrom: 'desc' }, take: 1 } } } } } } } } },
-    prices: { where: { categoryCode: data.categoryCode }, include: { versions: { where: { currency: data.currency, status: 'ACTIVE', effectiveFrom: { lte: new Date() } }, orderBy: { effectiveFrom: 'desc' } } } },
+    optionGroups: { where: { active: true }, orderBy: { position: 'asc' }, include: { options: { where: { active: true }, orderBy: { position: 'asc' }, include: { linkedProduct: { include: { stockItem: true, prices: { where: { categoryCode: priceCategoryCode }, include: { versions: { where: { currency: data.currency, status: 'ACTIVE', effectiveFrom: { lte: new Date() }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: new Date() } }] }, orderBy: { effectiveFrom: 'desc' }, take: 1 } } } } } } } } },
+    prices: { where: { categoryCode: priceCategoryCode }, include: { versions: { where: { currency: data.currency, status: 'ACTIVE', effectiveFrom: { lte: new Date() } }, orderBy: { effectiveFrom: 'desc' } } } },
   },
 });  const lines = data.items.map(item => {
         const p = products.find(p => p.id === item.productId);
@@ -191,14 +278,14 @@ const products = await tx.product.findMany({
           }
         }
         if (Object.keys(selections).some(groupId => !p.optionGroups.some(group => group.id === groupId))) throw new DomainError('PRODUCT_OPTION_UNKNOWN', 'Un groupe d’options est inconnu.', 400);
-        const baseAmount = menuVersion ? new Decimal((menuVersion.items.find(row => row.productId === p.id)?.priceSnapshot as { categories?: Record<string, { amount: string; currency: string }> } | null)?.categories?.[data.categoryCode]?.amount ?? '0') : new Decimal(price!.amount);
+        const baseAmount = menuVersion ? new Decimal((menuVersion.items.find(row => row.productId === p.id)?.priceSnapshot as { categories?: Record<string, { amount: string; currency: string }> } | null)?.categories?.[priceCategoryCode]?.amount ?? '0') : new Decimal(price!.amount);
         const extraAmount = extras.reduce((sum, option) => sum.add(option.unitPrice), new Decimal(0));
         const lineAmount = baseAmount.add(extraAmount);
         if (menuVersion) {
           const menuItem = menuVersion.items.find(row => row.productId === p.id);
           if (!menuItem?.available || item.quantity > menuItem.quantityAvailable - menuItem.quantitySold - menuItem.quantityReserved) throw new DomainError('MENU_ITEM_UNAVAILABLE', 'Article épuisé ou absent de cette version du menu.');
           const snapshot = z.object({categories:z.record(z.object({amount:z.string(),currency:z.string(),priceVersionId:z.string()}))}).parse(menuItem.priceSnapshot);
-          const fixed = snapshot.categories[data.categoryCode];
+          const fixed = snapshot.categories[priceCategoryCode];
           if (!fixed || fixed.currency !== data.currency) throw new DomainError('PRICE_UNAVAILABLE', 'Tarif du menu indisponible pour cette catégorie et cette devise.');
           return {productId:p.id,quantity:new Decimal(item.quantity),unitPrice:lineAmount,lineTotal:lineAmount.mul(item.quantity),supplementsSnapshot:extras.length?extras:undefined,productSnapshot:{name:p.name,stockMode:p.stockMode,stockItemId:p.stockItemId,stockQuantity:p.stockQuantity.toString(),menuVersionId:menuVersion.id,product:menuItem.productSnapshot,variants:menuItem.variants,priceVersionId:fixed.priceVersionId,clientCategoryCode:data.categoryCode}};
         }
@@ -217,7 +304,7 @@ const products = await tx.product.findMany({
     price.id,
 
   clientCategoryCode:
-    data.categoryCode,
+    priceCategoryCode,
 }, };
       });
       const total = lines.reduce((n, i) => n.add(i.lineTotal), new Decimal(0));
@@ -235,9 +322,54 @@ const products = await tx.product.findMany({
         }
       }
       if (total.lte(0)) throw new DomainError('INVALID_AMOUNT', 'Le total doit être positif.', 400);
-      const order = await tx.order.create({ data: { number: `POS-${localDate().slice(0,4)}-${randomUUID().slice(0, 8).toUpperCase()}`, clientId: data.clientId ?? null, menuVersionId:data.menuVersionId, sourceChannel: 'POS', createdById: actorId, serviceMode: data.serviceMode, businessDate: new Date(localDate()), totalAmount: total, commercialTotal: total, coveredAmount: new Decimal(0), currency: data.currency, items: { create: lines }, statusHistory: { create: { toStatus: 'RECEIVED', actorId } } } });
+      const businessDate = new Date(`${localDate()}T00:00:00.000Z`);
+      let reservedRightId: string | undefined;
+      let coverageReason: string | undefined;
+      if (subscriber && data.serviceCode) {
+        const subscription = await tx.subscription.findFirst({
+          where: { clientId: subscriber.id, status: { in: ['ACTIVE','SUSPENDED'] }, startsOn: { lte: businessDate }, endsOn: { gte: businessDate } },
+          orderBy: { startsOn: 'desc' }, include: { planVersion: true },
+        });
+        if (!subscription) coverageReason = 'Aucun abonnement utilisable pour cette période : vente au tarif normal.';
+        else if (subscription.status === 'SUSPENDED') coverageReason = 'Abonnement suspendu : vente au tarif normal.';
+        else if (subscription.balance.gt(0)) coverageReason = 'Paiement de l’abonnement requis : vente au tarif normal.';
+        else if (subscription.status !== 'ACTIVE' || subscriptionLifecycleStatus(subscription.balance, subscription.startsOn, subscription.endsOn) !== 'ACTIVE') coverageReason = 'Abonnement non actif ou expiré : vente au tarif normal.';
+        else {
+          const services = Array.isArray(subscription.planVersion.services) ? subscription.planVersion.services as string[] : [];
+          const rightService = services.includes(data.serviceCode) ? data.serviceCode : (data.serviceCode !== 'BREAKFAST' && services.includes('MAIN') ? 'MAIN' : null);
+          if (!rightService) coverageReason = `La formule ne couvre pas le service ${data.serviceCode} : vente au tarif normal.`;
+          else {
+            const candidate = await tx.mealRight.findUnique({ where: { subscriptionId_businessDate_serviceCode_quotaGroup: { subscriptionId: subscription.id, businessDate, serviceCode: rightService, quotaGroup: rightService } } });
+            if (candidate?.status === 'RESERVED') throw new DomainError('MEAL_RIGHT_RESERVED', 'Un droit est déjà réservé par une commande WhatsApp. Retrouvez la commande à retirer de cet abonné.', 409);
+            if (candidate?.status === 'AVAILABLE') {
+              await tx.$queryRaw`SELECT id FROM "MealRight" WHERE id = ${candidate.id}::uuid FOR UPDATE`;
+              const currentRight = await tx.mealRight.findUniqueOrThrow({ where: { id: candidate.id } });
+              if (currentRight.status === 'AVAILABLE') reservedRightId = currentRight.id;
+              else if (currentRight.status === 'RESERVED') throw new DomainError('MEAL_RIGHT_RESERVED', 'Un droit vient d’être réservé. Retrouvez la commande à retirer de cet abonné.', 409);
+              else coverageReason = 'DROIT ABONNEMENT DÉJÀ UTILISÉ : ce repas sera facturé normalement.';
+            } else coverageReason = candidate?.status === 'CONSUMED' ? 'DROIT ABONNEMENT DÉJÀ UTILISÉ : ce repas sera facturé normalement.' : 'Aucun droit disponible pour ce service : vente au tarif normal.';
+          }
+        }
+      }
+      let coveredAmount = new Decimal(0);
+      if (reservedRightId) for (const line of lines) {
+        const snapshot = line.productSnapshot as { productCategoryCode?: string };
+        if (!['REPAS','PETIT_DEJEUNER'].includes(snapshot.productCategoryCode ?? '')) continue;
+        const supplements = Array.isArray(line.supplementsSnapshot) ? line.supplementsSnapshot as { unitPrice: string; quantity: number }[] : [];
+        const extras = supplements.reduce((sum, option) => sum.add(new Decimal(option.unitPrice).mul(option.quantity)), new Decimal(0));
+        coveredAmount = coveredAmount.add(Prisma.Decimal.max(new Decimal(0), line.lineTotal.sub(extras.mul(line.quantity))));
+      }
+      coveredAmount = Prisma.Decimal.min(coveredAmount, total);
+      if (reservedRightId && coveredAmount.lte(0)) coverageReason = 'Le droit ne couvre pas le type de repas sélectionné : vente au tarif normal.';
+      if (reservedRightId && coveredAmount.gt(0)) {
+        const reserved = await tx.mealRight.updateMany({ where: { id: reservedRightId, status: 'AVAILABLE' }, data: { status: 'RESERVED', reservedAt: new Date() } });
+        if (reserved.count !== 1) throw new DomainError('MEAL_RIGHT_UNAVAILABLE', 'Le droit vient d’être utilisé. Actualisez le dossier abonné.', 409);
+      } else reservedRightId = undefined;
+      const amountDue = total.sub(coveredAmount);
+      const pickupStatus = amountDue.eq(0) ? 'READY' : 'RECEIVED';
+      const order = await tx.order.create({ data: { number: `POS-${localDate().slice(0,4)}-${randomUUID().slice(0, 8).toUpperCase()}`, clientId: data.clientId ?? null, menuVersionId:data.menuVersionId, mealRightId:reservedRightId, serviceCode:data.serviceCode, sourceChannel: 'POS', createdById: actorId, cashierId: actorId, serviceMode: data.serviceMode, businessDate, totalAmount: total, commercialTotal: total, coveredAmount, paymentRequired: amountDue.gt(0), currency: data.currency, status: pickupStatus, items: { create: lines }, reservation: reservedRightId ? { create: { mealRightId: reservedRightId, reservedById: actorId } } : undefined, statusHistory: { create: { toStatus: pickupStatus, actorId } } } });
       await audit(tx, actorId, 'ORDER_CREATED', 'Order', order.id, { total: total.toString(), number: order.number });
-      return order;
+      return { ...order, coverageReason: coveredAmount.gt(0) ? 'Repas couvert par le droit disponible.' : coverageReason ?? null };
     });
   }
 
@@ -330,7 +462,7 @@ const products = await tx.product.findMany({
 
       // Reste à payer.
       const remaining =
-        (order.sourceChannel === 'WHATSAPP' ? order.totalAmount.sub(order.coveredAmount) : order.totalAmount).sub(
+        order.totalAmount.sub(order.coveredAmount).sub(
           alreadyPaid,
         );
 
@@ -1208,7 +1340,39 @@ const refundable =
 @Controller('orders')
 export class OrdersController {
   constructor(private readonly orders: OrdersService, private readonly prisma: PrismaService, private readonly terminal: PaymentTerminalService) {}
-  @Require('orders.create') @Post() create(@Body() body: unknown, @Headers('idempotency-key') key: string | undefined, @Req() req: AuthRequest) { return this.orders.create(body, key, req.actor.id).then(data => ({ success: true, data })); }
+  @RequireAny('orders.create','sales.create') @Post() create(@Body() body: unknown, @Headers('idempotency-key') key: string | undefined, @Req() req: AuthRequest) { return this.orders.create(body, key, req.actor.id).then(data => ({ success: true, data })); }
+  @Require('sales.create') @Get('pos-catalog') async posCatalog(@Query() query: unknown) {
+    const queryData = z.object({ categoryCode: z.string().trim().min(1).max(50).optional(), currency: z.enum(['CDF','USD']).default('CDF') }).parse(query);
+    let categoryCode = queryData.categoryCode;
+    if (!categoryCode) {
+      const setting = await this.prisma.setting.findUnique({ where: { key: 'pos_anonymous_category' } });
+      const configured = setting?.validated ? z.object({ categoryCode: z.string().min(1).max(50) }).safeParse(setting.value) : null;
+      if (!configured?.success) throw new DomainError('POS_PRICE_CATEGORY_NOT_CONFIGURED', 'La catégorie de tarification des ventes comptoir doit être configurée et validée par la Responsable.', 409);
+      categoryCode = configured.data.categoryCode;
+    }
+    const currency = queryData.currency;
+    const now = new Date();
+    const products = await this.prisma.product.findMany({
+      where: { active: true, available: true, category: { active: true }, prices: { some: { categoryCode, versions: { some: { currency, status: 'ACTIVE', effectiveFrom: { lte: now }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }] } } } } },
+      orderBy: [{ category: { label: 'asc' } }, { name: 'asc' }],
+      include: {
+        category: true,
+        stockItem: { select: { active: true, quantity: true } },
+        prices: { where: { categoryCode }, include: { versions: { where: { currency, status: 'ACTIVE', effectiveFrom: { lte: now }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }] }, orderBy: { effectiveFrom: 'desc' }, take: 1 } } },
+        optionGroups: { where: { active: true }, orderBy: { position: 'asc' }, include: { options: { where: { active: true }, orderBy: { position: 'asc' }, include: { linkedProduct: { include: { stockItem: { select: { active: true, quantity: true } } } } } } } },
+      },
+    });
+    return { success: true, data: { categoryCode, products: products.filter(product => product.prices[0]?.versions[0]).map(product => ({ ...product, price: product.prices[0]!.versions[0], prices: undefined })) } };
+  }
+  @Require('sales.create') @Get('pos-subscriber/:id') async posSubscriber(@Param('id') id: string) {
+    uuid.parse(id);
+    const client = await this.prisma.client.findFirst({ where: { id, archivedAt: null }, select: { id: true, firstName: true, lastName: true, ulcNumber: true, phone: true, category: { select: { code: true, label: true } }, subscriptions: { orderBy: { startsOn: 'desc' }, take: 5, select: { id: true, status: true, startsOn: true, endsOn: true, balance: true, currency: true, planVersion: { select: { services: true, plan: { select: { name: true } } } } } } } });
+    if (!client) throw new DomainError('NOT_FOUND', 'Abonné introuvable ou archivé.', 404);
+    const subscriber = { ...client, subscriptions: client.subscriptions.map(subscription => ({ ...subscription, status: ['SUSPENDED','CANCELLED'].includes(subscription.status) ? subscription.status : subscriptionLifecycleStatus(subscription.balance, subscription.startsOn, subscription.endsOn) })) };
+    const date = new Date(`${localDate()}T00:00:00.000Z`);
+    const orders = await this.prisma.order.findMany({ where: { clientId: id, sourceChannel: 'WHATSAPP', status: 'READY', businessDate: date }, orderBy: { createdAt: 'asc' }, take: 10, include: { items: { select: { id: true, quantity: true, lineTotal: true, productSnapshot: true, variantsSnapshot: true, supplementsSnapshot: true } }, payments: { where: { status: { in: ['CONFIRMED','PENDING'] } }, select: { id: true, status: true, method: true, amountDue: true } }, reservation: { include: { mealRight: { select: { serviceCode: true, quotaGroup: true, status: true } } } } } });
+    return { success: true, data: { client: subscriber, orders: orders.map(order => { const paid = order.payments.filter(payment => payment.status === 'CONFIRMED').reduce((sum, payment) => sum.add(payment.amountDue), new Prisma.Decimal(0)); return { ...order, paidAmount: paid.toString(), remainingAmount: Prisma.Decimal.max(new Prisma.Decimal(0), order.totalAmount.sub(order.coveredAmount).sub(paid)).toString() }; }) } };
+  }
   @Require('orders.manage') @Get('whatsapp') async whatsapp(@Query() query: unknown) {
     const {q='',date:day}=z.object({q:z.string().trim().max(120).optional(),date:z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()}).parse(query);
     const where={sourceChannel:'WHATSAPP' as const,...(day?{businessDate:new Date(`${day}T00:00:00.000Z`)}:{}),...(q?{OR:[{number:{contains:q,mode:'insensitive' as const}},{client:{is:{firstName:{contains:q,mode:'insensitive' as const}}}},{client:{is:{lastName:{contains:q,mode:'insensitive' as const}}}},{client:{is:{ulcNumber:{contains:q,mode:'insensitive' as const}}}},{client:{is:{phone:{contains:q,mode:'insensitive' as const}}}}]}:{})};
@@ -1237,26 +1401,114 @@ export class OrdersController {
       await audit(tx,req.actor.id,'WHATSAPP_ORDER_CREATED','Order',order.id,{number,subscriberId:subscriber.id,serviceCode:body.serviceCode,businessDate:body.businessDate,mealRightId:right.id});return order;
     });
   }
-  @RequireAny('sales.create','orders.manage') @Get('subscriber-search') async subscriberSearch(@Query('q') raw:string|undefined){const q=(raw??'').trim();if(q.length<2)return {success:true,data:[]};const data=await this.prisma.client.findMany({where:{status:'ACTIVE',OR:[{firstName:{contains:q,mode:'insensitive'}},{lastName:{contains:q,mode:'insensitive'}},{ulcNumber:{contains:q,mode:'insensitive'}},{phone:{contains:q}}]},take:10,orderBy:[{lastName:'asc'},{firstName:'asc'}],select:{id:true,firstName:true,lastName:true,ulcNumber:true,phone:true,category:{select:{code:true,label:true}},subscriptions:{orderBy:{startsOn:'desc'},take:3,select:{id:true,status:true,startsOn:true,endsOn:true,planVersion:{select:{plan:{select:{name:true}}}}}}}});return {success:true,data};}
+  @RequireAny('sales.create','orders.manage')
+  @Get('subscriber-search')
+  async subscriberSearch(@Query('q') raw: string | undefined, @Query('page') rawPage: string | undefined) {
+    const q = (raw ?? '').trim();
+    if (q.length < 2) return { success: true, data: [] };
+    const page = Math.max(1, Math.min(1000, Number.parseInt(rawPage ?? '1', 10) || 1));
+    const words = q.split(/\s+/).filter(Boolean);
+    const nameTerms = words.length > 1
+      ? [
+          { AND: [{ firstName: { contains: words[0], mode: 'insensitive' as const } }, { lastName: { contains: words.slice(1).join(' '), mode: 'insensitive' as const } }] },
+          { AND: [{ lastName: { contains: words[0], mode: 'insensitive' as const } }, { firstName: { contains: words.slice(1).join(' '), mode: 'insensitive' as const } }] },
+        ]
+      : [{ firstName: { contains: q, mode: 'insensitive' as const } }, { lastName: { contains: q, mode: 'insensitive' as const } }];
+    const today = new Date(localDate());
+    const readyOrders = await this.prisma.order.findMany({
+      where: { sourceChannel: 'WHATSAPP', status: 'READY', businessDate: today, clientId: { not: null } },
+      select: { clientId: true },
+      orderBy: { createdAt: 'asc' },
+      take: 200,
+    });
+    const pickupIds = new Set(readyOrders.flatMap(order => order.clientId ? [order.clientId] : []));
+    const searchWhere = {
+      archivedAt: null,
+      OR: [...nameTerms, { ulcNumber: { contains: q, mode: 'insensitive' as const } }, { phone: { contains: q } }],
+    };
+    const pickupClientIds = [...pickupIds];
+    const activeSubscriptions = await this.prisma.subscription.findMany({
+      where: { status: 'ACTIVE', startsOn: { lte: today }, endsOn: { gte: today }, balance: { lte: 0 } },
+      select: { clientId: true }, take: 500,
+    });
+    const activeClientIds = [...new Set(activeSubscriptions.map(subscription => subscription.clientId))];
+    const prioritizedCandidates = [...new Set([...pickupClientIds, ...activeClientIds])];
+    const matchingPriorityRows = prioritizedCandidates.length
+      ? await this.prisma.client.findMany({ where: { AND: [searchWhere, { id: { in: prioritizedCandidates } }] }, select: { id: true, firstName: true, lastName: true }, take: 500 })
+      : [];
+    const prioritizedIds = matchingPriorityRows.sort((a, b) => Number(pickupIds.has(b.id)) - Number(pickupIds.has(a.id))
+      || Number(activeClientIds.includes(b.id)) - Number(activeClientIds.includes(a.id))
+      || a.lastName.localeCompare(b.lastName, 'fr') || a.firstName.localeCompare(b.firstName, 'fr')).map(client => client.id);
+    const pickupOffset = (page - 1) * 10;
+    const prioritizedPageIds = prioritizedIds.slice(pickupOffset, pickupOffset + 10);
+    const ordinaryPageSize = Math.max(0, 10 - prioritizedPageIds.length);
+    const ordinaryOffset = Math.max(0, pickupOffset - prioritizedIds.length);
+    const select = {
+        id: true, firstName: true, lastName: true, ulcNumber: true, phone: true,
+        category: { select: { code: true, label: true } },
+        subscriptions: {
+          orderBy: { startsOn: 'desc' }, take: 3,
+          select: { id: true, status: true, startsOn: true, endsOn: true, balance: true, planVersion: { select: { plan: { select: { name: true } } } } },
+        },
+      } as const;
+    const [priorityRows, ordinaryRows] = await Promise.all([
+      prioritizedPageIds.length ? this.prisma.client.findMany({ where: { id: { in: prioritizedPageIds } }, select, orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }] }) : [],
+      ordinaryPageSize ? this.prisma.client.findMany({ where: { AND: [searchWhere, { id: { notIn: prioritizedIds } }] }, take: ordinaryPageSize, skip: ordinaryOffset, orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }], select }) : [],
+    ]);
+    const rows = [...priorityRows, ...ordinaryRows];
+    const data = rows.map(({ subscriptions, ...client }) => ({
+      ...client,
+      hasPickupToday: pickupIds.has(client.id),
+      subscriptions: subscriptions.map(subscription => ({
+        id: subscription.id,
+        status: subscription.status === 'SUSPENDED' || subscription.status === 'CANCELLED'
+          ? subscription.status
+          : subscriptionLifecycleStatus(subscription.balance, subscription.startsOn, subscription.endsOn),
+        startsOn: subscription.startsOn,
+        endsOn: subscription.endsOn,
+        planName: subscription.planVersion.plan.name,
+      })),
+    })).sort((a, b) => Number(b.hasPickupToday) - Number(a.hasPickupToday)
+      || Number(b.subscriptions.some(subscription => subscription.status === 'ACTIVE')) - Number(a.subscriptions.some(subscription => subscription.status === 'ACTIVE'))
+      || a.lastName.localeCompare(b.lastName, 'fr') || a.firstName.localeCompare(b.firstName, 'fr'));
+    return { success: true, data };
+  }
+  @Require('sales.create')
+  @Post(':id/extras')
+  addPickupExtras(@Param('id') id: string, @Body() body: unknown, @Headers('idempotency-key') key: string | undefined, @Req() req: AuthRequest) {
+    return this.orders.addPickupExtras(id, body, key, req.actor.id).then(data => ({ success: true, data }));
+  }
   @Require('sales.create') @Post(':id/handover') async handover(@Param('id') id:string,@Body() input:unknown,@Headers('idempotency-key') key:string|undefined,@Req() req:AuthRequest){
     uuid.parse(id);const {cashSessionId}=z.object({cashSessionId:uuid}).strict().parse(input);
-    const result=await mutate(this.prisma,'orders.handover',key,req.actor.id,{id,cashSessionId},async tx=>{await lockOrder(tx,id);await lockCash(tx,cashSessionId,req.actor.id);const order=await tx.order.findUnique({where:{id},include:{payments:true,reservation:true,items:true,client:{include:{category:true}}}});if(!order||order.sourceChannel!=='WHATSAPP'||order.status!=='READY')throw new DomainError('ORDER_NOT_READY','Commande non disponible au retrait ou déjà remise.',409);if(order.payments.some(p=>p.status==='PENDING'))throw new DomainError('PAYMENT_PENDING','Un paiement de supplément attend confirmation.',409);const paid=order.payments.filter(p=>p.status==='CONFIRMED').reduce((n,p)=>n.add(p.amountDue),new Decimal(0));if(order.totalAmount.sub(order.coveredAmount).sub(paid).gt(0))throw new DomainError('PAYMENT_REQUIRED','Encaissez les extras avant la remise.',409);if(!order.reservation)throw new DomainError('MEAL_RIGHT_UNAVAILABLE','Réservation du droit introuvable.',409);const right=await tx.mealRight.findUniqueOrThrow({where:{id:order.reservation.mealRightId}});if(right.status!=='RESERVED')throw new DomainError('MEAL_RIGHT_UNAVAILABLE','Le droit n’est plus réservé.',409);const sub=await tx.subscription.findUniqueOrThrow({where:{id:right.subscriptionId},include:{planVersion:true}});if(sub.clientId!==order.clientId||sub.balance.gt(0)||sub.status!=='ACTIVE'||sub.startsOn>new Date(`${order.businessDate.toISOString().slice(0,10)}T00:00:00.000Z`)||sub.endsOn<new Date(`${order.businessDate.toISOString().slice(0,10)}T00:00:00.000Z`))throw new DomainError('SUBSCRIPTION_PAYMENT_BLOCKING','L’abonnement ou sa période ne permet pas le retrait.',409);await consumeReservedMealRight(tx,{mealRightId:order.reservation.mealRightId,orderId:id,actorId:req.actor.id,idempotencyKey:key!});const qtys=new Map<string,number>();for(const line of order.items){if(line.productId)qtys.set(line.productId,(qtys.get(line.productId)??0)+Math.ceil(Number(line.quantity)));}for(const [productId,quantity] of qtys){const changed=await tx.menuItem.updateMany({where:{menuVersionId:order.menuVersionId!,productId,quantityReserved:{gte:quantity}},data:{quantityReserved:{decrement:quantity},quantitySold:{increment:quantity}}});if(changed.count!==1)throw new DomainError('MENU_RESERVATION_MISSING','La réservation du menu est absente.',409);}const handedAt=new Date();const stockTotals=new Map<string,Prisma.Decimal>();for(const line of order.items){const productSnapshot=line.productSnapshot as {stockMode?:string;stockItemId?:string;stockQuantity?:string};if(productSnapshot.stockMode==='DIRECT'&&productSnapshot.stockItemId&&productSnapshot.stockQuantity)stockTotals.set(productSnapshot.stockItemId,(stockTotals.get(productSnapshot.stockItemId)??new Decimal(0)).add(line.quantity.mul(productSnapshot.stockQuantity)));const extras=Array.isArray(line.supplementsSnapshot)?line.supplementsSnapshot as {quantity?:number;linkedStock?:{stockMode?:string;stockItemId?:string|null;stockQuantity?:string}}[]:[];for(const extra of extras){const linked=extra.linkedStock;if(linked?.stockMode==='DIRECT'&&linked.stockItemId&&linked.stockQuantity)stockTotals.set(linked.stockItemId,(stockTotals.get(linked.stockItemId)??new Decimal(0)).add(line.quantity.mul(extra.quantity??1).mul(linked.stockQuantity)));}}for(const [stockId,quantity] of [...stockTotals].sort(([a],[b])=>a.localeCompare(b)))await move(tx,stockId,quantity.negated(),'DIRECT_SALE',id,`Retrait abonné : ${order.number}`,req.actor.id);await tx.order.update({where:{id},data:{status:'SERVED',cashierId:req.actor.id,handoverAt:handedAt,mealConsumption:{create:{mealRightId:right.id,servedById:req.actor.id,idempotencyKey:key!,consumedAt:handedAt}},statusHistory:{create:{fromStatus:'READY',toStatus:'SERVED',actorId:req.actor.id}}}});await audit(tx,req.actor.id,'ORDER_HANDED_OVER','Order',id,{cashierId:req.actor.id,handoverAt:handedAt.toISOString(),amountDue:'0'});return {id,number:order.number,status:'SERVED',receiptUrl:`/orders/${id}/receipt`};});return {success:true,data:result};
+    const posOrder = await this.prisma.order.findUnique({ where: { id }, select: { sourceChannel: true, clientId: true } });
+    if (posOrder?.sourceChannel === 'POS' && posOrder.clientId) {
+      const result = await this.orders.handoverPos(id, cashSessionId, key, req.actor.id);
+      return { success: true, data: result };
+    }
+    const result=await mutate(this.prisma,'orders.handover',key,req.actor.id,{id,cashSessionId},async tx=>{await lockOrder(tx,id);await lockCash(tx,cashSessionId,req.actor.id);const order=await tx.order.findUnique({where:{id},include:{payments:true,reservation:true,items:true,client:{include:{category:true}},cashier:{select:{firstName:true,lastName:true}}}});if(order?.status==='SERVED'&&order.handoverAt)throw new DomainError('ORDER_ALREADY_SERVED',`REPAS DÉJÀ REMIS · ${new Intl.DateTimeFormat('fr-CD',{dateStyle:'short',timeStyle:'short',timeZone:'Africa/Kinshasa'}).format(order.handoverAt)} · Caissier : ${order.cashier?`${order.cashier.firstName} ${order.cashier.lastName}`:'inconnu'}.`,409);if(!order||order.sourceChannel!=='WHATSAPP'||order.status!=='READY')throw new DomainError('ORDER_NOT_READY','Commande non disponible au retrait.',409);if(order.payments.some(p=>p.status==='PENDING'))throw new DomainError('PAYMENT_PENDING','Un paiement de supplément attend confirmation.',409);const paid=order.payments.filter(p=>p.status==='CONFIRMED').reduce((n,p)=>n.add(p.amountDue),new Decimal(0));if(order.totalAmount.sub(order.coveredAmount).sub(paid).gt(0))throw new DomainError('PAYMENT_REQUIRED','Encaissez les extras avant la remise.',409);if(!order.reservation)throw new DomainError('MEAL_RIGHT_UNAVAILABLE','Réservation du droit introuvable.',409);const right=await tx.mealRight.findUniqueOrThrow({where:{id:order.reservation.mealRightId}});if(right.status==='CONSUMED')throw new DomainError('MEAL_RIGHT_CONSUMED','Droit déjà consommé aujourd’hui.',409);if(right.status!=='RESERVED')throw new DomainError('MEAL_RIGHT_UNAVAILABLE','Droit non réservé ou indisponible.',409);const sub=await tx.subscription.findUniqueOrThrow({where:{id:right.subscriptionId},include:{planVersion:true}});const businessDay=new Date(`${order.businessDate.toISOString().slice(0,10)}T00:00:00.000Z`);if(sub.clientId!==order.clientId)throw new DomainError('SUBSCRIBER_MISMATCH','Le droit ne correspond pas à cet abonné.',409);if(sub.status==='SUSPENDED')throw new DomainError('SUBSCRIPTION_SUSPENDED','Abonnement suspendu.',409);if(sub.status==='CANCELLED')throw new DomainError('SUBSCRIPTION_CANCELLED','Abonnement annulé.',409);if(sub.balance.gt(0))throw new DomainError('SUBSCRIPTION_PAYMENT_BLOCKING','Paiement de l’abonnement requis avant le retrait.',409);if(sub.startsOn>businessDay)throw new DomainError('SUBSCRIPTION_SCHEDULED','Abonnement planifié : la période n’a pas commencé.',409);if(sub.endsOn<businessDay)throw new DomainError('SUBSCRIPTION_EXPIRED','Abonnement expiré.',409);if(order.serviceCode&&Array.isArray(sub.planVersion.services)&&!sub.planVersion.services.includes(order.serviceCode))throw new DomainError('SERVICE_NOT_COVERED',`Cette formule ne couvre pas le service ${order.serviceCode}.`,409);if(sub.status!=='ACTIVE')throw new DomainError('SUBSCRIPTION_NOT_ACTIVE','Abonnement non actif.',409);await consumeReservedMealRight(tx,{mealRightId:order.reservation.mealRightId,orderId:id,actorId:req.actor.id,idempotencyKey:key!});const qtys=new Map<string,number>();for(const line of order.items){if(line.productId)qtys.set(line.productId,(qtys.get(line.productId)??0)+Math.ceil(Number(line.quantity)));}for(const [productId,quantity] of qtys){const changed=await tx.menuItem.updateMany({where:{menuVersionId:order.menuVersionId!,productId,quantityReserved:{gte:quantity}},data:{quantityReserved:{decrement:quantity},quantitySold:{increment:quantity}}});if(changed.count!==1)throw new DomainError('MENU_RESERVATION_MISSING','La réservation du menu est absente.',409);}const handedAt=new Date();const stockTotals=new Map<string,Prisma.Decimal>();for(const line of order.items){const productSnapshot=line.productSnapshot as {stockMode?:string;stockItemId?:string;stockQuantity?:string};if(productSnapshot.stockMode==='DIRECT'&&productSnapshot.stockItemId&&productSnapshot.stockQuantity)stockTotals.set(productSnapshot.stockItemId,(stockTotals.get(productSnapshot.stockItemId)??new Decimal(0)).add(line.quantity.mul(productSnapshot.stockQuantity)));const extras=Array.isArray(line.supplementsSnapshot)?line.supplementsSnapshot as {quantity?:number;linkedStock?:{stockMode?:string;stockItemId?:string|null;stockQuantity?:string}}[]:[];for(const extra of extras){const linked=extra.linkedStock;if(linked?.stockMode==='DIRECT'&&linked.stockItemId&&linked.stockQuantity)stockTotals.set(linked.stockItemId,(stockTotals.get(linked.stockItemId)??new Decimal(0)).add(line.quantity.mul(extra.quantity??1).mul(linked.stockQuantity)));}}for(const [stockId,quantity] of [...stockTotals].sort(([a],[b])=>a.localeCompare(b)))await move(tx,stockId,quantity.negated(),'DIRECT_SALE',id,`Retrait abonné : ${order.number}`,req.actor.id);await tx.order.update({where:{id},data:{status:'SERVED',cashierId:req.actor.id,handoverAt:handedAt,mealConsumption:{create:{mealRightId:right.id,servedById:req.actor.id,idempotencyKey:key!,consumedAt:handedAt}},statusHistory:{create:{fromStatus:'READY',toStatus:'SERVED',actorId:req.actor.id}}}});await audit(tx,req.actor.id,'ORDER_HANDED_OVER','Order',id,{cashierId:req.actor.id,handoverAt:handedAt.toISOString(),amountDue:'0'});return {id,number:order.number,status:'SERVED',receiptUrl:`/orders/${id}/receipt`};});return {success:true,data:result};
   }
   @Require('sales.create') @Get('ready-for-pickup') async clientOrdersToCollect(@Query() query: unknown) {
-    const { q = '' } = z.object({ q: z.string().trim().max(120).optional() }).parse(query);
+    const { q = '', page = 1, limit = 50 } = z.object({ q: z.string().trim().max(120).optional(), page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(50) }).parse(query);
+    const words = q.split(/\s+/).filter(Boolean);
+    const clientNameTerms = words.length > 1 ? [
+      { AND: [{ firstName: { contains: words[0], mode: 'insensitive' as const } }, { lastName: { contains: words.slice(1).join(' '), mode: 'insensitive' as const } }] },
+      { AND: [{ lastName: { contains: words[0], mode: 'insensitive' as const } }, { firstName: { contains: words.slice(1).join(' '), mode: 'insensitive' as const } }] },
+    ] : [
+      { firstName: { contains: q, mode: 'insensitive' as const } },
+      { lastName: { contains: q, mode: 'insensitive' as const } },
+    ];
     const where = {
       sourceChannel: 'WHATSAPP' as const,
       clientId: { not: null },
       status: 'READY' as const,
       ...(q ? { OR: [
         { number: { contains: q, mode: 'insensitive' as const } },
-        { client: { is: { firstName: { contains: q, mode: 'insensitive' as const } } } },
-        { client: { is: { lastName: { contains: q, mode: 'insensitive' as const } } } },
+        ...clientNameTerms.map(term => ({ client: { is: term } })),
         { client: { is: { ulcNumber: { contains: q, mode: 'insensitive' as const } } } },
         { client: { is: { phone: { contains: q, mode: 'insensitive' as const } } } },
       ] } : {}),
     };
-    const [orders,total] = await Promise.all([this.prisma.order.findMany({ where, take: 100, orderBy: { createdAt: 'asc' }, include: {
+    const [orders,total] = await Promise.all([this.prisma.order.findMany({ where, take: limit, skip: (page - 1) * limit, orderBy: { createdAt: 'asc' }, include: {
       client: { select: { firstName: true, lastName: true, ulcNumber: true, phone: true, category: { select: { code: true, label: true } } } },
       items: { select: { id: true, quantity: true, lineTotal: true, productSnapshot: true, variantsSnapshot: true, supplementsSnapshot: true } },
       payments: { select: { id: true, status: true, method: true, amountDue: true } },
@@ -1326,7 +1578,7 @@ cancel(
     if (this.terminal.mode !== 'MANUAL' && body.externalReference) throw new DomainError('TERMINAL_REFERENCE_NOT_ALLOWED', 'La référence est fournie par le simulateur ou le terminal configuré.', 400);
     const order = await this.prisma.order.findUnique({ where: { id }, include: { payments: true } });
     if (!order || !((order.sourceChannel === 'WHATSAPP' && order.status === 'READY') || (order.sourceChannel === 'POS' && order.status === 'RECEIVED' && order.paymentRequired))) throw new DomainError('ORDER_NOT_PAYABLE', 'Cette commande ne peut plus recevoir de paiement.', 409);
-    const remaining = (order.sourceChannel === 'WHATSAPP' ? order.totalAmount.sub(order.coveredAmount) : order.totalAmount).sub(order.payments.filter(p => p.status === 'CONFIRMED').reduce((sum, p) => sum.add(p.amountDue), new Prisma.Decimal(0)));
+    const remaining = order.totalAmount.sub(order.coveredAmount).sub(order.payments.filter(p => p.status === 'CONFIRMED').reduce((sum, p) => sum.add(p.amountDue), new Prisma.Decimal(0)));
     if (remaining.lte(0)) throw new DomainError('ORDER_ALREADY_PAID', 'Cette commande est déjà réglée.', 409);
     const reference = this.terminal.mode === 'MOCK' ? `MOCK-${createHash('sha256').update(`${id}:${key}`).digest('hex').slice(0, 32)}` : body.externalReference;
     const payment = await this.orders.pay(id, { cashSessionId: body.cashSessionId, method: 'CARD', receivedAmount: remaining.toString(), receivedCurrency: order.currency, externalReference: reference }, key, req.actor.id) as { id: string; orderId: string | null; amountDue: { toString(): string }; referenceCurrency: 'CDF' | 'USD'; status: string; [key: string]: unknown };
@@ -1387,9 +1639,30 @@ cancel(
     const { page, limit, q } = pageSchema.parse(query); const where = q ? { number: { contains: q, mode: 'insensitive' as const } } : {};
     return { success: true, data: await this.prisma.order.findMany({ where, take: limit, skip: (page-1)*limit, orderBy: { createdAt: 'desc' }, include: { items: true, payments: true } }), meta: { page, limit, total: await this.prisma.order.count({ where }) } };
   }
-  @RequireAny('sales.read','sales.create') @Get(':id/receipt') async receipt(@Param('id') id: string) {
-    uuid.parse(id); const order = await this.prisma.order.findUnique({ where: { id }, include: { items: true, payments: { where: { status: 'CONFIRMED' } } } });
+  @RequireAny('sales.read','sales.create') @Get(':id/receipt') async receipt(@Param('id') id: string, @Query('duplicate') duplicateRaw: string | undefined, @Req() req: AuthRequest) {
+    uuid.parse(id);
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      include: {
+        items: true,
+        payments: { where: { status: 'CONFIRMED' } },
+        client: { select: { firstName: true, lastName: true, ulcNumber: true, phone: true, category: { select: { code: true, label: true } } } },
+        reservation: {
+          include: {
+            mealRight: {
+              include: {
+                subscription: {
+                  include: { planVersion: { include: { plan: true } } },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
     if (!order || (!order.payments.length && !(order.status === 'SERVED' && order.handoverAt))) throw new DomainError('PAYMENT_NOT_CONFIRMED', 'Le reçu sera disponible après remise ou confirmation du paiement.');
-    return { success: true, data: order };
+    if (duplicateRaw !== undefined && duplicateRaw !== 'true') throw new DomainError('INVALID_RECEIPT_COPY', 'Le paramètre duplicate doit valoir true.', 400);
+    if (duplicateRaw === 'true') await this.prisma.auditLog.create({ data: { actorId: req.actor.id, action: 'RECEIPT_REPRINTED', entityType: 'Order', entityId: id, newValue: { number: order.number } } });
+    return { success: true, data: { ...order, subscriptionName: order.reservation?.mealRight.subscription.planVersion.plan.name ?? null, receiptCopy: duplicateRaw === 'true' ? 'DUPLICATA' : null } };
   }
 }

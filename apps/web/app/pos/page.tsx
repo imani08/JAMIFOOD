@@ -1,564 +1,90 @@
 'use client';
-import { useMemo, useRef, useState } from 'react';
-import Link from 'next/link';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { ProductImage } from '../../components/product-image';
-import { useData, useAction, Feedback, Heading, Loading } from '../../components/common';
+import { Feedback, Heading, Loading, useAction, useData } from '../../components/common';
 import { useUser } from '../../components/shell';
 import { api, money } from '../../lib/api';
-type Product={
-  id:string;
-  name:string;
-  imageUrl:string;
-  prices:{
-    versions:{
-      amount:string;
-      currency:string
-    }[]
-  }[]
-};
-type Client = {
-  id: string;
-  firstName: string;
-  lastName: string;
-  ulcNumber: string | null;
-  phone: string | null;
 
-  category: {
-    code: string;
-    label: string;
-  };
-};
-type Order={id:string;number:string;totalAmount:string;currency:string;createdAt?:string;serviceMode?:string;commercialTotal?:string;coveredAmount?:string;delivery?:{addressSnapshot:Record<string,unknown>;status:string}|null;items?:{id:string;quantity:string;lineTotal:string;productSnapshot:{name?:string};variantsSnapshot?:Record<string,string>|null;supplementsSnapshot?:{name:string;unitPrice:string;quantity:number}[]|null}[];payments?:{id:string;status:string;method:string;amountDue:string}[];client?:{firstName:string;lastName:string;ulcNumber:string|null;phone:string|null;category:{code:string;label:string}}|null;paidAmount?:string;remainingAmount?:string;pendingPayment?:{id:string;status:string;method:string;amountDue:string}|null};
-type CollectOrder=Order & {createdAt:string;items:NonNullable<Order['items']>;client:NonNullable<Order['client']>};
-type CollectQueue={orders:CollectOrder[];total:number};
-type TerminalConfig={mode:'MOCK'|'MANUAL'|'INTEGRATED';provider:string;terminalId:string|null;simulated:boolean};
-type PaymentResult={id:string;status:string;amountDue?:string;changeAmount:string;changeCurrency:string|null;remainingAmount:string;orderStatus:string;method?:string;terminal?:{status:string;externalReference?:string;provider?:string;terminalId?:string;message?:string}};
-export default function Pos(){const [view,setView]=useState<'NEW'|'COLLECT'>('NEW'),[queueSearch,setQueueSearch]=useState(''),[orderSource,setOrderSource]=useState<'POS'|'CLIENT'>('POS'),[category,setCategory]=useState('ETUDIANT_EXTERNE'),[mode,setMode]=useState(''),[cart,setCart]=useState<{p:Product;quantity:number}[]>([]),[order,setOrder]=useState<Order|null>(null),[method,setMethod]=useState('CASH'),[currency,setCurrency]=useState('CDF'),[received,setReceived]=useState(''),[reference,setReference]=useState('');const terminalConfig=useData<TerminalConfig>('/orders/terminal/config');const terminalStartKey=useRef('');const paymentAttempt=useRef<{signature:string;key:string}|null>(null);
-const [
-  payment,
-  setPayment,
-] = useState<PaymentResult | null>(null);;const [clientQuery, setClientQuery] =
-  useState('');
-
-const [
-  selectedClient,
-  setSelectedClient,
-] = useState<Client | null>(null);
-const [service,setService]=useState('LUNCH');
-const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Kinshasa'}).format(new Date());
-const menu=useData<{version:{id:string;items:{productId:string;name:string;imageUrl:string;price:{amount:string;currency:string};quantityAvailable:number;quantitySold:number;quantityReserved:number;remaining:number}[]}}|null>(`/menus/active?date=${today}&serviceCode=${service}&categoryCode=${category}`);
-const products={isLoading:menu.isLoading,error:menu.error,data:menu.data?.version.items.filter(item=>item.price.currency==='CDF').map(item=>({id:item.productId,name:item.name,imageUrl:item.imageUrl,quantityAvailable:item.quantityAvailable,quantitySold:item.quantitySold,quantityReserved:item.quantityReserved,remaining:item.remaining,prices:[{versions:[item.price]}]}))};
-const clients =
-  useData<Client[]>(
-    '/clients?q=' +
-      encodeURIComponent(
-        clientQuery,
-      ) +
-      '&limit=10',
-  );
-const session = useData<{id:string}|null>('/cash');const collectOrders=useData<CollectQueue>(`/orders/client-to-collect?q=${encodeURIComponent(queueSearch)}`);const queueRows=collectOrders.data?.orders??[];const queueCount=collectOrders.data?.total??0;const action=useAction();const user=useUser();const total=useMemo(()=>cart.reduce((n,{p,quantity})=>n+Number(p.prices[0]?.versions[0]?.amount??0)*quantity,0),[cart]);const orderRemaining=payment?.remainingAmount??order?.remainingAmount??order?.totalAmount??'0';async function submitOrderPayment(){if(!order||!session.data)return;const body={cashSessionId:session.data.id,method,receivedAmount:received||orderRemaining,receivedCurrency:method==='CASH'?currency:order.currency,...(method==='CASH'?{}:{externalReference:reference.trim()})};const signature=JSON.stringify({orderId:order.id,body});if(!paymentAttempt.current||paymentAttempt.current.signature!==signature)paymentAttempt.current={signature,key:crypto.randomUUID()};const result=await api<PaymentResult>('/orders/'+order.id+'/payments',body,paymentAttempt.current.key);paymentAttempt.current=null;setPayment(result);if(orderSource==='CLIENT'&&result.orderStatus!=='CONFIRMED')setOrder(current=>current?{...current,paidAmount:(Number(current.paidAmount??0)+Number(result.amountDue??0)).toString(),remainingAmount:result.remainingAmount}:null);setReference('');if(result.orderStatus!=='CONFIRMED')setReceived(result.remainingAmount);}return <><Heading title="Caisse · terminal de vente" subtitle="Encaissez les ventes et les commandes du portail client."/><div className="tabs" role="tablist" aria-label="Vues du terminal"><button type="button" className={view==='NEW'?'primary':'secondary'} aria-selected={view==='NEW'} onClick={()=>{setView('NEW');setOrder(null);setPayment(null);setOrderSource('POS');}}>Nouvelle vente</button><button type="button" className={view==='COLLECT'?'primary':'secondary'} aria-selected={view==='COLLECT'} onClick={()=>{setView('COLLECT');setOrder(null);setPayment(null);setOrderSource('CLIENT');}}>{`Commandes à encaisser (${queueCount})`}</button></div><Feedback {...action}/>{!session.data&&<p className="error">Ouvrez une session dans <Link href="/cash"><u>Caisses & clôtures</u></Link> avant d’encaisser.</p>}<div className="pos">{view==='NEW'?<section className="card"><h2>Le menu du campus</h2>
-<div className="section">
-  <label>Service du menu publié<select value={service} disabled={!!order} onChange={event=>{setService(event.target.value);setCart([]);}}><option value="BREAKFAST">Petit déjeuner</option><option value="LUNCH">Déjeuner</option><option value="DINNER">Dîner</option></select></label>
-  {!menu.isLoading && !menu.data && <p role="status">Aucun menu publié pour ce service. Publiez le menu avant de vendre au POS.</p>}
-  <h3>Client</h3>
-
-  {selectedClient ? (
-    <div className="item">
-      <span>
-        <strong>
-          {selectedClient.firstName}{' '}
-          {selectedClient.lastName}
-        </strong>
-
-        <br />
-
-        <small className="muted">
-          {selectedClient.category.label}
-          {' · '}
-          {selectedClient.ulcNumber ||
-            selectedClient.phone ||
-            'Sans matricule'}
-        </small>
-      </span>
-
-      {!order && (
-        <button
-          type="button"
-          className="secondary"
-          onClick={() => {
-            setSelectedClient(null);
-            setClientQuery('');
-          }}
-        >
-          Vente anonyme
-        </button>
-      )}
+type CatalogProduct = { id:string; name:string; imageUrl:string; category:{code:string;label:string}; stockMode:string; stockItem:{active:boolean;quantity:string}|null; stockQuantity:string; price:{amount:string;currency:string}; optionGroups:{id:string;name:string;type:string;required:boolean;minSelections:number;maxSelections:number;options:{id:string;name:string;priceDelta:string;currency:string;linkedProduct?:{id:string;name:string;active:boolean;available:boolean;stockMode:string;stockItem:{active:boolean;quantity:string}|null;stockQuantity:string}|null}[]}[] };
+type Client = {id:string;firstName:string;lastName:string;ulcNumber:string|null;phone:string|null;category:{code:string;label:string};hasPickupToday?:boolean;subscriptions?:{id:string;status:string;startsOn:string;endsOn:string;planName:string}[]};
+type Line = {id:string;quantity:string;lineTotal:string;productSnapshot:{name?:string};variantsSnapshot?:Record<string,string>|null;supplementsSnapshot?:{name:string;unitPrice:string;quantity:number}[]|null};
+type Payment = {id:string;status:string;method:string;amountDue:string};
+type Order = {id:string;number:string;status:string;sourceChannel:'POS'|'WHATSAPP';serviceCode:string|null;totalAmount:string;commercialTotal:string;coveredAmount:string;currency:string;clientId?:string|null;coverageReason?:string|null;createdAt?:string;handoverAt?:string|null;receiptCopy?:string|null;remainingAmount?:string;paidAmount?:string;payments?:Payment[];items?:Line[];client?:Client|null;pendingPayment?:Payment|null;subscriptionName?:string|null};
+type SubscriberInfo = {client:Omit<Client,'subscriptions'> & {subscriptions:{id:string;status:string;startsOn:string;endsOn:string;balance:string;currency:string;planVersion:{services:unknown;plan:{name:string}}}[]};orders:Order[]};
+type CashSession = {id:string;openedAt:string;status:string;openingUsd:string;openingCdf:string;cashRegister:{label:string;code:string}}|null;
+type CartLine = {key:string;product:CatalogProduct;quantity:number;selections:Record<string,string[]>};
+type Stage = 'HOME'|'SUBSCRIBER'|'DIRECT';
+type PaymentResult = {id:string;status:string;amountDue?:string;changeAmount:string;changeCurrency:string|null;remainingAmount:string;orderStatus:string;method?:string};
+const serviceLabel:Record<string,string>={BREAKFAST:'Petit-déjeuner',LUNCH:'Déjeuner',DINNER:'Dîner',MAIN:'Repas principal'};
+function statusLabel(status:string){return ({ACTIVE:'ACTIF',SCHEDULED:'PLANIFIÉ',PENDING_PAYMENT:'PAIEMENT EN ATTENTE',SUSPENDED:'SUSPENDU',EXPIRED:'EXPIRÉ',CANCELLED:'ANNULÉ'} as Record<string,string>)[status]??status;}
+function cartTotal(cart:CartLine[]){return cart.reduce((all,line)=>{const additions=Object.entries(line.selections).flatMap(([groupId,ids])=>ids.map(id=>Number(line.product.optionGroups.find(group=>group.id===groupId)?.options.find(option=>option.id===id)?.priceDelta??0))).reduce((a,b)=>a+b,0);return all+(Number(line.product.price.amount)+additions)*line.quantity;},0);}
+export default function Pos(){
+  const [stage,setStage]=useState<Stage>('HOME');
+  const [query,setQuery]=useState('');
+  const [debounced,setDebounced]=useState('');
+  const [subscriber,setSubscriber]=useState<Client|null>(null);
+  const [service,setService]=useState<'BREAKFAST'|'LUNCH'|'DINNER'>('LUNCH');
+  const [commercialCategory,setCommercialCategory]=useState<string|null>(null);
+  const [cart,setCart]=useState<CartLine[]>([]);
+  const [customizing,setCustomizing]=useState<CatalogProduct|null>(null);
+  const [selection,setSelection]=useState<Record<string,string[]>>({});
+  const [order,setOrder]=useState<Order|null>(null);
+  const [payment,setPayment]=useState<PaymentResult|null>(null);
+  const [method,setMethod]=useState('CASH');
+  const [received,setReceived]=useState('');
+  const [reference,setReference]=useState('');
+  const [completed,setCompleted]=useState(false);
+  const [lastReceipt,setLastReceipt]=useState<Order|null>(null);
+  const printed=useRef('');
+  const action=useAction();
+  const user=useUser();
+  const session=useData<CashSession>('/cash');
+  const results=useQuery({queryKey:['pos-subscriber-search',debounced],queryFn:()=>api<Client[]>(`/orders/subscriber-search?q=${encodeURIComponent(debounced)}&limit=10`),enabled:debounced.length>=2});
+  const profile=useQuery({queryKey:['pos-subscriber',subscriber?.id],queryFn:()=>api<SubscriberInfo>(`/orders/pos-subscriber/${subscriber!.id}`),enabled:!!subscriber?.id});
+  const catalog=useData<{categoryCode:string;products:CatalogProduct[]}>(subscriber?`/orders/pos-catalog?categoryCode=${encodeURIComponent(subscriber.category.code)}&currency=CDF`:'/orders/pos-catalog?currency=CDF');
+  const categoryCode=subscriber?.category.code??catalog.data?.categoryCode;
+  const totalIndicatif=useMemo(()=>cartTotal(cart),[cart]);
+  const productCategories=useMemo(()=>[...new Map((catalog.data?.products??[]).map(product=>[product.category.code,product.category])).values()],[catalog.data]);
+  const due=payment?.remainingAmount??order?.remainingAmount??(order?String(Math.max(0,Number(order.totalAmount)-Number(order.coveredAmount)-Number(order.paidAmount??0))):'0');
+  useEffect(()=>{const timer=window.setTimeout(()=>setDebounced(query.trim()),250);return()=>window.clearTimeout(timer);},[query]);
+  useEffect(()=>{setCart([]);setOrder(null);setPayment(null);setCompleted(false);setCommercialCategory(null);},[subscriber?.id,service]);
+  function reset(){setOrder(null);setPayment(null);setCart([]);setSubscriber(null);setQuery('');setDebounced('');setReference('');setReceived('');setCompleted(false);setCommercialCategory(null);setStage('HOME');}
+  function printTicket(ticket:Order,returnHome:boolean){setOrder(ticket);setLastReceipt(ticket);setCompleted(true);window.setTimeout(()=>{window.print();if(returnHome)reset();},120);}
+  function chooseProduct(product:CatalogProduct){if(product.optionGroups.length){setCustomizing(product);setSelection({});}else setCart(lines=>[...lines,{key:crypto.randomUUID(),product,quantity:1,selections:{}}]);}
+  function addCustomized(){if(!customizing)return;const valid=customizing.optionGroups.every(group=>{const count=selection[group.id]?.length??0;return count>=Math.max(group.minSelections,group.required?1:0)&&count<=group.maxSelections;});if(!valid){action.run(async()=>{throw new Error('Choisissez les options obligatoires du produit.');});return;}setCart(lines=>[...lines,{key:crypto.randomUUID(),product:customizing,quantity:1,selections:selection}]);setCustomizing(null);setSelection({});}
+  async function createSale(){if(!cart.length||!session.data)throw new Error('Aucune caisse active ne vous est affectée. Contactez le Gestionnaire.');if(!categoryCode)throw new Error('La catégorie de tarification comptoir n’est pas configurée.');const created=await api<Order>('/orders',{...(subscriber?{clientId:subscriber.id}:{}),categoryCode,serviceCode:service,serviceMode:'TAKEAWAY',currency:'CDF',items:cart.map(line=>({productId:line.product.id,quantity:line.quantity,selections:line.selections}))});setOrder({...created,client:subscriber,clientId:subscriber?.id??null,sourceChannel:'POS',createdAt:new Date().toISOString(),remainingAmount:String(Math.max(0,Number(created.totalAmount)-Number(created.coveredAmount))),paidAmount:'0'});setPayment(null);setMethod('CASH');setReference('');setReceived(String(Math.max(0,Number(created.totalAmount)-Number(created.coveredAmount))));}
+  async function handover(current:Order){if(!session.data)throw new Error('Aucune caisse active ne vous est affectée. Contactez le Gestionnaire.');const result=await api<{receiptUrl:string}>(`/orders/${current.id}/handover`,{cashSessionId:session.data.id},crypto.randomUUID());const ticket=await api<Order>(result.receiptUrl);printTicket(ticket,true);}
+  async function submitPayment(){if(!order||!session.data)throw new Error('Aucune caisse active ne vous est affectée. Contactez le Gestionnaire.');if(method!=='CASH'&&!reference.trim())throw new Error('La référence de paiement est obligatoire.');const result=await api<PaymentResult>(`/orders/${order.id}/payments`,{cashSessionId:session.data.id,method,receivedAmount:received||due,receivedCurrency:'CDF',...(method==='CASH'?{}:{externalReference:reference.trim()})});setPayment(result);setOrder(current=>current?{...current,paidAmount:String(Number(current.paidAmount??0)+Number(result.amountDue??0)),remainingAmount:result.remainingAmount}:null);if(result.status==='CONFIRMED'&&Number(result.remainingAmount)===0){if(order.clientId){await handover({...order,remainingAmount:'0'});}else{const ticket=await api<Order>(`/orders/${order.id}/receipt`);printTicket(ticket,true);}}}
+  async function chooseWhatsAppOrder(row:Order){setOrder({...row,client:subscriber,sourceChannel:'WHATSAPP'});setPayment(null);setReceived(row.remainingAmount??'0');setMethod('CASH');setStage('SUBSCRIBER');}
+  async function addPickupExtras(){if(!order||!session.data||!cart.length)throw new Error('Sélectionnez un extra.');await api<Order>(`/orders/${order.id}/extras`,{cashSessionId:session.data.id,items:cart.map(line=>({productId:line.product.id,quantity:line.quantity,selections:line.selections}))});setCart([]);const refreshed=await api<SubscriberInfo>(`/orders/pos-subscriber/${subscriber!.id}`);profile.refetch();const updated=refreshed.orders.find(row=>row.id===order.id);if(updated){setOrder({...updated,client:subscriber});setReceived(updated.remainingAmount??'0');}}
+  return <>
+    <div className="no-print"><Heading title="JAMI FOOD POS" subtitle={`${user?.firstName??''} ${user?.lastName??''} · Service comptoir et retrait abonné.`}/>
+      <section className="card pos-cash-session"><div className="toolbar"><div><h2>Ma caisse</h2>{session.data?<small className="success">ACTIVE · {session.data.cashRegister.label} · {session.data.cashRegister.code} · ouverte {new Intl.DateTimeFormat('fr-CD',{dateStyle:'short',timeStyle:'short'}).format(new Date(session.data.openedAt))}</small>:<small className="error">Aucune caisse active ne vous est affectée. Contactez le Gestionnaire.</small>}</div><strong className="badge">{session.data?.status??'NON AFFECTÉE'}</strong></div></section>
+      <Feedback {...action}/>
+      {stage==='HOME'?<><section className="card pos-home"><h2>Choisir une opération</h2><div className="pos-home-actions"><button className="primary" type="button" onClick={()=>{setStage('SUBSCRIBER');setSubscriber(null);setOrder(null);}}>ABONNÉ</button><button className="secondary" type="button" onClick={()=>{setStage('DIRECT');setSubscriber(null);setOrder(null);}}>VENTE DIRECTE</button></div></section>{lastReceipt&&<section className="card"><h2>Dernier ticket</h2><p>{lastReceipt.number} · {lastReceipt.client?`${lastReceipt.client.firstName} ${lastReceipt.client.lastName}`:'Vente directe'} · {money(lastReceipt.totalAmount,lastReceipt.currency)}</p><button type="button" className="secondary" onClick={()=>void action.run(async()=>{const duplicate=await api<Order>(`/orders/${lastReceipt.id}/receipt?duplicate=true`);setLastReceipt(duplicate);setOrder(duplicate);setCompleted(true);window.setTimeout(()=>{window.print();setOrder(null);setCompleted(false);},100);},'Duplicata prêt à imprimer.')}>RÉIMPRIMER · DUPLICATA</button></section>}</>:<>
+        <button type="button" className="secondary" onClick={reset}>← Retour à l’accueil POS</button>
+        {stage==='SUBSCRIBER'&&<section className="card"><h2>Servir un abonné</h2>{!subscriber?<><label>Rechercher par nom, prénom, matricule ou téléphone<input autoFocus value={query} onChange={event=>setQuery(event.target.value)} placeholder="Nom de l’abonné" /></label><Loading loading={results.isLoading&&debounced.length>=2} error={results.error}/>{debounced.length>=2&&<div className="list">{results.data?.map(client=><button key={client.id} type="button" className="item" onClick={()=>{setSubscriber(client);setQuery('');}}><span><strong>{client.firstName} {client.lastName}</strong><br/><small className="muted">{client.ulcNumber??client.phone??client.category.label}</small></span>{client.hasPickupToday&&<strong className="success">COMMANDE À RETIRER</strong>}</button>)}</div>}</>:<>
+          <div className="item"><span><strong>{subscriber.firstName} {subscriber.lastName}</strong><br/><small>{subscriber.ulcNumber??subscriber.phone??''}</small></span><button className="secondary" type="button" onClick={()=>setSubscriber(null)}>Changer d’abonné</button></div>
+          <Loading loading={profile.isLoading} error={profile.error}/>
+          {profile.data?.client.subscriptions.map(item=><p key={item.id} className={item.status==='ACTIVE'?'success':'muted'}><strong>{item.planVersion.plan.name} · {statusLabel(item.status)}</strong><br/><small>{new Intl.DateTimeFormat('fr-CD',{dateStyle:'short'}).format(new Date(item.startsOn))} → {new Intl.DateTimeFormat('fr-CD',{dateStyle:'short'}).format(new Date(item.endsOn))}</small></p>)}
+          {profile.data?.orders.map(row=><div key={row.id} className="item"><span><strong>Commande à retirer · {serviceLabel[row.serviceCode??'']??row.serviceCode}</strong><br/><small>{row.number} · {row.items?.map(line=>`${line.productSnapshot.name??'Article'} × ${line.quantity}`).join(' · ')}</small><br/><small>Commercial {money(row.commercialTotal,row.currency)} · Couvert {money(row.coveredAmount,row.currency)} · Payé {money(row.paidAmount??'0',row.currency)} · Reste {money(row.remainingAmount??'0',row.currency)}</small></span><button className="primary" type="button" onClick={()=>void chooseWhatsAppOrder(row)}>Ouvrir / retirer</button></div>)}
+          {!order&&<><h3>Choisir le service demandé</h3><div className="pos-payment-methods">{(['BREAKFAST','LUNCH','DINNER'] as const).map(value=><button key={value} className={service===value?'pos-payment-choice selected':'pos-payment-choice'} onClick={()=>setService(value)} type="button">{serviceLabel[value]}</button>)}</div></>}
+        </>}</section>}
+        {(stage==='DIRECT'||(stage==='SUBSCRIBER'&&subscriber&&!order))&&<section className="card"><h2>{stage==='DIRECT'?'Vente directe anonyme':'Repas demandé'}</h2><div className="pos-payment-methods">{(['BREAKFAST','LUNCH','DINNER'] as const).map(value=><button key={value} className={service===value?'pos-payment-choice selected':'pos-payment-choice'} onClick={()=>setService(value)} type="button">{serviceLabel[value]}</button>)}</div><p className="muted small">Choisissez uniquement le type commercial et les portions. Le menu détaillé du jour reste masqué.</p><Loading loading={catalog.isLoading} error={catalog.error}/>{commercialCategory===null?<div className="pos-home-actions">{productCategories.map(category=><button key={category.code} type="button" className="secondary" onClick={()=>setCommercialCategory(category.code)}>{category.label}</button>)}</div>:<><button type="button" className="secondary" onClick={()=>setCommercialCategory(null)}>← Types commerciaux</button><div className="products">{catalog.data?.products.filter(product=>product.category.code===commercialCategory).map(product=><button key={product.id} type="button" className="product-card" onClick={()=>chooseProduct(product)}><ProductImage value={product.imageUrl} name={product.name}/><strong>{product.name}</strong><small>{product.category.label}</small><span>{money(product.price.amount,product.price.currency)}</span>{product.optionGroups.length>0&&<small>Personnaliser</small>}</button>)}</div></>}
+          {customizing&&<div className="card section" role="dialog" aria-modal="true"><h3>Personnaliser · {customizing.name}</h3>{customizing.optionGroups.map(group=><fieldset key={group.id}><legend>{group.name}{group.required?' · obligatoire':''}</legend>{group.options.map(option=><label key={option.id}><input type={group.maxSelections===1?'radio':'checkbox'} name={group.id} checked={selection[group.id]?.includes(option.id)??false} onChange={event=>setSelection(current=>{const selected=current[group.id]??[];return {...current,[group.id]:event.target.checked?(group.maxSelections===1?[option.id]:[...selected,option.id]):selected.filter(id=>id!==option.id)};})}/>{option.name}{Number(option.priceDelta)>0?` + ${money(option.priceDelta,option.currency)}`:''}</label>)}</fieldset>)}<button type="button" className="primary" onClick={addCustomized}>Ajouter au panier</button><button type="button" className="secondary" onClick={()=>setCustomizing(null)}>Annuler</button></div>}
+          {cart.map(line=><div className="item" key={line.key}><span>{line.product.name} × {line.quantity}<br/><small>{Object.entries(line.selections).flatMap(([group,ids])=>ids.map(id=>line.product.optionGroups.find(value=>value.id===group)?.options.find(value=>value.id===id)?.name)).filter(Boolean).join(' · ')}</small></span><div className="actions"><button type="button" className="secondary" onClick={()=>setCart(lines=>lines.map(value=>value.key===line.key?{...value,quantity:value.quantity-1}:value).filter(value=>value.quantity>0))}>−</button><b>{line.quantity}</b><button type="button" className="secondary" onClick={()=>setCart(lines=>lines.map(value=>value.key===line.key?{...value,quantity:value.quantity+1}:value))}>+</button><button type="button" className="secondary" onClick={()=>setCart(lines=>lines.filter(value=>value.key!==line.key))}>Retirer</button></div></div>)}
+          {cart.length>0&&<><p>Total indicatif · calcul final par le serveur : <strong>{money(totalIndicatif)}</strong></p><button type="button" className="primary full" disabled={action.busy||!session.data} onClick={()=>void action.run(createSale,subscriber?'Commande abonné calculée.':'Vente enregistrée.')} >Continuer</button></>}
+        </section>}
+        {order&&<section className="card"><h2>{order.sourceChannel==='WHATSAPP'?'Commande WhatsApp':'Commande'} · {order.number}</h2><p>{order.client?`${order.client.firstName} ${order.client.lastName}`:'Vente directe anonyme'} · {serviceLabel[order.serviceCode??'']??order.serviceCode}</p>{order.client&&order.coverageReason&&<p className={Number(order.coveredAmount)>0?'success':'preview'}>{order.coverageReason}</p>}{order.items?.map(line=><div className="item" key={line.id}><span>{line.productSnapshot.name??'Article'} × {line.quantity}{line.supplementsSnapshot?.map((extra,index)=><small key={index}> · {extra.name}</small>)}</span><strong>{money(line.lineTotal,order.currency)}</strong></div>)}<div className="section"><p>Total commercial <strong>{money(order.commercialTotal??order.totalAmount,order.currency)}</strong></p><p>Couvert abonnement <strong>{money(order.coveredAmount,order.currency)}</strong></p><p>Déjà payé <strong>{money(order.paidAmount??'0',order.currency)}</strong></p><p>À payer <strong>{money(due,order.currency)}</strong></p></div>
+          {order.client&&order.sourceChannel==='WHATSAPP'&&Number(due)>0&&<><h3>Ajouter une portion ou un supplément</h3><div className="products">{catalog.data?.products.filter(product=>!['REPAS','PETIT_DEJEUNER'].includes(product.category.code)).map(product=><button key={product.id} type="button" className="product-card" onClick={()=>chooseProduct(product)}><strong>{product.name}</strong><small>{product.category.label}</small><span>{money(product.price.amount,product.price.currency)}</span></button>)}</div>{cart.length>0&&<button className="secondary" type="button" disabled={action.busy} onClick={()=>void action.run(addPickupExtras,'Extras ajoutés. Le solde a été recalculé.')}>Ajouter les extras · {money(totalIndicatif)}</button>}</>}
+          {order.client&&Number(due)===0&&<button type="button" className="primary full" disabled={action.busy||!session.data} onClick={()=>void action.run(()=>handover(order),'Remise enregistrée.')}>REMETTRE LE REPAS</button>}
+          {Number(due)>0&&<><h3>Encaisser</h3><div className="pos-payment-methods">{[['CASH','Espèces'],['MPESA','M-Pesa'],['ORANGE_MONEY','Orange Money'],['AIRTEL_MONEY','Airtel Money'],['CARD','Carte'],['TRANSFER','Virement']].map(([code,label])=><button type="button" key={code} className={method===code?'pos-payment-choice selected':'pos-payment-choice'} onClick={()=>setMethod(code)}>{label}</button>)}</div>{method!=='CASH'&&<label>Référence de paiement<input value={reference} maxLength={120} onChange={event=>setReference(event.target.value)}/></label>}<label>{method==='CASH'?'Montant reçu':'Montant à encaisser'}<input inputMode="decimal" value={received||due} onChange={event=>setReceived(event.target.value)}/></label><button type="button" className="primary full" disabled={action.busy||!session.data} onClick={()=>void action.run(submitPayment,method==='CASH'?'Paiement confirmé.':`Paiement ${method} enregistré en attente de confirmation.`)}>{order.client?'ENCAISSER ET SERVIR':'ENCAISSER'}</button>{payment?.status==='PENDING'&&<p className="preview">Paiement en attente de confirmation. Ne remettez pas le repas avant confirmation.</p>}{payment?.status==='CONFIRMED'&&<p className="success">Paiement confirmé · Monnaie à rendre : {money(payment.changeAmount,payment.changeCurrency??order.currency)}</p>}</>}
+          {completed&&<button type="button" className="secondary" onClick={reset}>Retour à l’accueil POS</button>}
+          {order.status==='SERVED'&&<button type="button" className="secondary" onClick={()=>void action.run(async()=>{const duplicate=await api<Order>(`/orders/${order.id}/receipt?duplicate=true`);setOrder(duplicate);window.setTimeout(()=>window.print(),100);},'Duplicata prêt à imprimer.')}>RÉIMPRIMER · DUPLICATA</button>}
+        </section>}
+      </>}
     </div>
-  ) : (
-    <>
-      <label>
-        Rechercher un client
-
-        <input
-          value={clientQuery}
-          disabled={!!order}
-          placeholder="Nom, matricule ou téléphone"
-          onChange={(e) =>
-            setClientQuery(e.target.value)
-          }
-        />
-      </label>
-
-      {clientQuery.trim() !== '' && (
-        <div className="list">
-          {clients.data?.map((client) => (
-            <button
-              key={client.id}
-              type="button"
-              className="item"
-              disabled={!!order}
-              onClick={() => {
-                setSelectedClient(client);
-
-                setCategory(
-                  client.category.code,
-                );
-
-                setCart([]);
-                setClientQuery('');
-              }}
-            >
-              <span>
-                <strong>
-                  {client.firstName}{' '}
-                  {client.lastName}
-                </strong>
-
-                <br />
-
-                <small className="muted">
-                  {client.category.label}
-                  {' · '}
-                  {client.ulcNumber ||
-                    client.phone ||
-                    'Sans matricule'}
-                </small>
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-
-      <p className="muted small">
-        Laissez vide pour une vente
-        anonyme.
-      </p>
-    </>
-  )}
-  
-</div><div className="form-grid">
-  <label>
-    Catégorie client
-
-    <select
-      value={category}
-      disabled={
-        !!order ||
-        !!selectedClient
-      }
-      onChange={(e) => {
-        setCategory(
-          e.target.value,
-        );
-
-        setCart([]);
-      }}
-    >
-      <option value="ETUDIANT_EXTERNE">
-        Étudiant externe
-      </option>
-
-      <option value="ETUDIANT_HOME">
-        Étudiant résident Home
-      </option>
-
-      <option value="PERSONNEL_ULC">
-        Personnel ULC
-      </option>
-    </select>
-  </label>
-
-  <label>
-    Mode de service
-
-    <select
-      value={mode}
-      disabled={!!order}
-      onChange={(e) =>
-        setMode(
-          e.target.value,
-        )
-      }
-    >
-      <option value="">Choisir un mode de service</option><option value="DINE_IN">
-        Sur place
-      </option>
-
-      <option value="TAKEAWAY">
-        À emporter
-      </option>
-
-      <option value="DELIVERY">
-        Livraison
-      </option>
-    </select>
-  </label>
-</div>
-
-<Loading
-  loading={products.isLoading}
-  error={products.error}
-/>
-
-<div className="products">
-  {products.data
-    ?.filter(
-      (p) =>
-        p.prices[0]?.versions[0],
-    )
-    .map((p) => (
-      <button
-        type="button"
-        className="product"
-        key={p.id}
-        disabled={!!order}
-        onClick={() =>
-          setCart((current) => {
-            const item =
-              current.find(
-                (x) =>
-                  x.p.id === p.id,
-              );
-
-            return item
-              ? current.map((x) =>
-                  x.p.id === p.id
-                    ? {
-                        ...x,
-                        quantity:
-                          x.quantity +
-                          1,
-                      }
-                    : x,
-                )
-              : [
-                  ...current,
-                  {
-                    p,
-                    quantity: 1,
-                  },
-                ];
-          })
-        }
-      >
-        <span>{p.name}</span>
-        <small className="muted">Restant : {p.remaining} · Prévu : {p.quantityAvailable} · Vendu : {p.quantitySold}{p.quantityReserved>0?` · Réservé : ${p.quantityReserved}`:''}</small>
-        <ProductImage value={p.imageUrl} name={p.name} />
-
-        <strong>
-          {money(
-            p.prices[0]
-              .versions[0]
-              .amount,
-          )}
-        </strong>
-
-        <small>
-          + Ajouter au panier
-        </small>
-      </button>
-    ))}
-</div>
-</section>:<section className="card"><div className="toolbar"><div><h2>Commandes front-office</h2><span className="muted small">Les plus anciennes d’abord · commandes déjà créées</span></div><strong className="badge">{queueCount}</strong></div><label>Rechercher numéro, client, matricule ou téléphone<input value={queueSearch} onChange={event=>setQueueSearch(event.target.value)} placeholder="WEB-… / nom / matricule / téléphone" /></label><Loading loading={collectOrders.isLoading} error={collectOrders.error}/><div className="list">{queueRows.map(row=><button key={row.id} type="button" className="item pos-queue-item" aria-pressed={order?.id===row.id} onClick={()=>{setOrder(row);setOrderSource('CLIENT');setCategory(row.client.category.code);setMode(row.serviceMode??'DINE_IN');setPayment(row.pendingPayment?{id:row.pendingPayment.id,status:'PENDING',amountDue:row.pendingPayment.amountDue,remainingAmount:row.remainingAmount??row.totalAmount,orderStatus:'RECEIVED',method:row.pendingPayment.method,changeAmount:'0',changeCurrency:null}:null);setReceived(row.remainingAmount??row.totalAmount);setMethod('CASH');setReference('');terminalStartKey.current='';paymentAttempt.current=null;}}><span><strong>{row.number}</strong><br/><span>{row.client.firstName} {row.client.lastName}</span><br/><small className="muted">{row.client.category.label} · {row.serviceMode==='TAKEAWAY'?'À emporter':row.serviceMode==='DELIVERY'?'Livraison':'Sur place'} · {new Intl.DateTimeFormat('fr-CD',{dateStyle:'short',timeStyle:'short'}).format(new Date(row.createdAt))}</small><br/><small>{row.items.map(item=>`${item.productSnapshot.name??'Article'} ×${item.quantity}`).join(' · ')}</small><br/><small className={row.pendingPayment?'status-warning':'muted'}>{row.pendingPayment?`Paiement en attente · ${row.pendingPayment.method}`:`Reste ${money(row.remainingAmount??row.totalAmount,row.currency)}`}</small></span><strong>{money(row.totalAmount,row.currency)}<br/><small className="badge">Ouvrir · encaisser</small></strong></button>)}{!collectOrders.isLoading&&!collectOrders.error&&!queueRows.length&&<p className="empty">Aucune commande web à encaisser.</p>}</div></section>}
-
-<section className="card">
-  <h2>
-    Votre commande{' '}
-    {order && (
-      <span className="badge">
-        {order.number}
-      </span>
-    )}
-  </h2>
-
-  {orderSource==='CLIENT'&&order ? (
-    <div className="pos-order-detail"><div className="item"><span><strong>{order.client?.firstName} {order.client?.lastName}</strong><br/><small className="muted">{order.client?.category.label} · {order.client?.ulcNumber??order.client?.phone??'Client'}</small><br/><small className="muted">{order.serviceMode==='TAKEAWAY'?'À emporter':order.serviceMode==='DELIVERY'?'Livraison':'Sur place'} · {order.createdAt?new Intl.DateTimeFormat('fr-CD',{dateStyle:'medium',timeStyle:'short'}).format(new Date(order.createdAt)):''}</small></span><button type="button" className="secondary" onClick={()=>{setOrder(null);setPayment(null);}}>Fermer</button></div>{Number(order.coveredAmount??0)>0&&<p className="success"><strong>COUVERT PAR ABONNEMENT</strong><br/>Montant commercial : {money(order.commercialTotal??order.totalAmount,order.currency)} · Pris en charge : {money(order.coveredAmount??'0',order.currency)} · Reste à payer : {money(order.totalAmount,order.currency)}</p>}<h3>Articles</h3>{order.items?.map(item=><div className="pos-order-line" key={item.id}><strong>{item.productSnapshot.name??'Article'} × {item.quantity}</strong>{item.variantsSnapshot&&Object.entries(item.variantsSnapshot).map(([name,value])=><small className="muted" key={name}>• {name} : {value}</small>)}{item.supplementsSnapshot?.map((extra,index)=><small className="muted" key={`${extra.name}-${index}`}>• + {extra.name} ×{extra.quantity}</small>)}</div>)}<div className="section"><small className="muted">Total commercial</small><strong>{money(order.commercialTotal??order.totalAmount,order.currency)}</strong></div>{Number(order.coveredAmount??0)>0&&<p className="muted small">Pris en charge : {money(order.coveredAmount??'0',order.currency)}</p>}<div className="section"><small className="muted">Reste à payer</small><div className="metric">{money(orderRemaining,order.currency)}</div></div>{Number(order.paidAmount??0)>0&&<p className="muted">Déjà payé : {money(order.paidAmount??'0',order.currency)}</p>}</div>
-  ) : cart.length === 0 ? (
-    <p className="empty">
-      Ajoutez un repas pour
-      commencer.
-    </p>
-  ) : (
-    <>
-      {cart.map(
-        ({ p, quantity }) => (
-          <div
-            className="item"
-            key={p.id}
-          >
-            <div>
-              <strong>
-                {p.name}
-              </strong>
-
-              <br />
-
-              <small className="muted">
-  Prix :{' '}
-  {money(
-    p.prices[0].versions[0].amount,
-  )}
-  {' × '}
-  {quantity}
-  {' = '}
-  <strong>
-    {money(
-      Number(
-        p.prices[0].versions[0].amount,
-      ) * quantity,
-    )}
-  </strong>
-</small>
-            </div>
-
-            <div className="actions">
-              <button
-                type="button"
-                className="secondary"
-                disabled={!!order}
-                onClick={() =>
-                  setCart(
-                    (current) =>
-                      current
-                        .map(
-                          (item) =>
-                            item.p
-                              .id ===
-                            p.id
-                              ? {
-                                  ...item,
-                                  quantity:
-                                    item.quantity -
-                                    1,
-                                }
-                              : item,
-                        )
-                        .filter(
-                          (item) =>
-                            item.quantity >
-                            0,
-                        ),
-                  )
-                }
-              >
-                −
-              </button>
-
-              <strong>
-                {quantity}
-              </strong>
-
-              <button
-                type="button"
-                className="secondary"
-                disabled={!!order}
-                onClick={() =>
-                  setCart(
-                    (current) =>
-                      current.map(
-                        (item) =>
-                          item.p.id ===
-                          p.id
-                            ? {
-                                ...item,
-                                quantity:
-                                  item.quantity +
-                                  1,
-                              }
-                            : item,
-                      ),
-                  )
-                }
-              >
-                +
-              </button>
-
-              <button
-                type="button"
-                className="secondary"
-                disabled={!!order}
-                onClick={() =>
-                  setCart(
-                    (current) =>
-                      current.filter(
-                        (item) =>
-                          item.p.id !==
-                          p.id,
-                      ),
-                  )
-                }
-              >
-                Retirer
-              </button>
-            </div>
-          </div>
-        ),
-      )}
-
-      <div className="section">
-        <span className="muted">
-          Total
-        </span>
-
-        <div className="metric">
-          {money(
-            order?.totalAmount ??
-              total,
-          )}
-        </div>
-      </div>
-    </>
-  )}
-
-  {!order ? (
-    <>
-      {mode === 'DELIVERY' &&
-        !selectedClient && (
-          <p className="error">
-            Une livraison exige
-            l’identification du
-            client.
-          </p>
-        )}
-
-      <button
-        type="button"
-        className="primary full"
-        disabled={
-          !cart.length || !mode ||
-          !session.data ||
-          action.busy ||
-          (mode ===
-            'DELIVERY' &&
-            !selectedClient)
-        }
-        onClick={() =>
-          action.run(
-            async () => {
-              const o =
-                await api<Order>(
-                  '/orders',
-                  {
-                    ...(selectedClient
-                      ? {
-                          clientId:
-                            selectedClient.id,
-                        }
-                      : {}),
-
-                    categoryCode:
-                      category,
-                    menuVersionId: menu.data?.version.id,
-
-                    serviceMode:
-                      mode,
-
-                    currency:
-                      'CDF',
-
-                    items:
-                      cart.map(
-                        (x) => ({
-                          productId:
-                            x.p.id,
-
-                          quantity:
-                            x.quantity,
-                        }),
-                      ),
-                  },
-                );
-
-              setOrder(o);
-              setOrderSource('POS');
-              setPayment(null);
-              setMethod('CASH');
-              setReference('');
-              terminalStartKey.current = '';
-
-              setReceived(
-                o.totalAmount,
-              );
-            },
-            'Commande enregistrée. Procédez au paiement.',
-          )
-        }
-      >
-        Passer au paiement
-      </button>
-    </>
-  ) : payment?.orderStatus === 'CONFIRMED' ? (
-    <>
-      <p className="success">✓ Paiement confirmé. ✓ Commande envoyée automatiquement à la cuisine.</p>
-      <p>Monnaie à rendre : <strong>{money(payment.changeAmount, payment.changeCurrency ?? order.currency)}</strong></p>
-      <Link className="primary" href={'/orders?receipt=' + order.id}>Voir le reçu</Link>
-      <button type="button" className="secondary" onClick={() => { setOrder(null); setCart([]); setPayment(null); setSelectedClient(null); setClientQuery(''); setReference(''); setMethod('CASH'); terminalStartKey.current=''; if(orderSource==='CLIENT')setView('COLLECT');else setView('NEW'); }}>Nouvelle opération</button>
-    </>
-  ) : (
-    <>
-      {payment && Number(payment.remainingAmount) > 0 && <p className="success">Reste à payer : <strong>{money(payment.remainingAmount, order.currency)}</strong></p>}
-      {payment?.status === 'FAILED' && <p className="error">Paiement refusé. Aucun montant n’a été confirmé; choisissez un moyen et réessayez.</p>}
-      {payment?.status === 'CANCELLED' && <p className="preview">Paiement annulé. Aucun montant n’a été confirmé.</p>}
-      {payment?.status === 'PENDING' ? (
-        <section className="pos-terminal-state" aria-live="polite">
-          <h2>{payment.method==='CARD'?(payment.terminal?.status === 'PROCESSING' ? 'Paiement en cours' : 'Paiement à vérifier'):'Paiement externe en attente de confirmation'}</h2>
-          <strong className="pos-terminal-amount">{money(payment.amountDue ?? orderRemaining, order.currency)}</strong>
-          <p>{payment.method==='CARD'?`Commande ${order.number} · TPE ${payment.terminal?.terminalId ?? terminalConfig.data?.terminalId ?? 'manuel'}`:`Commande ${order.number} · ${payment.method}`}</p>
-          <p>{payment.terminal?.message ?? (payment.method==='CARD'?'Ne redemandez pas un paiement avant d’avoir vérifié le statut sur le terminal.':'Vérifiez le paiement puis demandez une confirmation à une personne autorisée.')}</p>
-          {payment.terminal?.externalReference && <p>Référence : <code>{payment.terminal.externalReference}</code></p>}
-          {payment.method==='CARD'&&terminalConfig.data?.mode === 'MOCK' && <div className="pos-terminal-simulations"><p>Simulation de développement — aucun paiement bancaire réel :</p>{(['APPROVED','DECLINED','CANCELLED','TIMEOUT','UNKNOWN'] as const).map(status=><button key={status} type="button" className="secondary" disabled={action.busy} onClick={()=>action.run(async()=>{const result=await api<{payment:PaymentResult;terminal:NonNullable<PaymentResult['terminal']>}>('/orders/payments/'+payment.id+'/terminal-simulate',{status});if(result.payment.status==='CONFIRMED'){setPayment({...payment,...result.payment,remainingAmount:payment.remainingAmount,orderStatus:Number(payment.remainingAmount)===0?'CONFIRMED':'RECEIVED',terminal:result.terminal});}else{const failed=['FAILED','CANCELLED'].includes(result.payment.status);setPayment({...payment,...result.payment,remainingAmount:failed?String(Number(payment.amountDue??order.totalAmount)+Number(payment.remainingAmount)):payment.remainingAmount,orderStatus:'RECEIVED',terminal:result.terminal});if(failed)terminalStartKey.current='';}},'Résultat de simulation enregistré.')}>{status==='APPROVED'?'Simuler accepté':status==='DECLINED'?'Simuler refusé':status==='CANCELLED'?'Simuler annulé':status==='TIMEOUT'?'Simuler délai dépassé':'Simuler statut inconnu'}</button>)}</div>}
-          {(payment.method!=='CARD'||terminalConfig.data?.mode === 'MANUAL')&&user?.permissions.includes('payments.confirm')&&<button type="button" className="primary full" disabled={action.busy} onClick={()=>action.run(async()=>{const result=await api<PaymentResult>('/orders/payments/'+payment.id+'/confirm',{});setPayment({...payment,...result,status:'CONFIRMED',remainingAmount:payment.remainingAmount,orderStatus:Number(payment.remainingAmount)===0?'CONFIRMED':'RECEIVED'});},'Paiement confirmé.')}>Confirmer après vérification</button>}
-          {payment.method==='CARD'&&<button type="button" className="secondary" disabled={action.busy} onClick={()=>action.run(async()=>{const result=await api<{payment:PaymentResult;terminal:NonNullable<PaymentResult['terminal']>}>('/orders/payments/'+payment.id+'/terminal-status',{});if(result.payment.status==='CONFIRMED')setPayment({...payment,...result.payment,orderStatus:Number(payment.remainingAmount)===0?'CONFIRMED':'RECEIVED'});else if(result.payment.status==='FAILED'||result.payment.status==='CANCELLED'){setPayment({...payment,...result.payment,remainingAmount:String(Number(payment.amountDue??order.totalAmount)+Number(payment.remainingAmount)),orderStatus:'RECEIVED'});terminalStartKey.current='';}else setPayment({...payment,...result.payment,terminal:result.terminal});},'Statut relu sur le terminal.')}>Vérifier le statut</button>}
-          <p className="muted small">Ne demandez pas immédiatement au client de payer une deuxième fois si le statut est incertain.</p>
-        </section>
-      ) : (
-        <>
-          <h3>Comment le client souhaite-t-il payer ?</h3>
-          <div className="pos-payment-methods">{[
-            ['CASH','Espèces'],['CARD','Carte / TPE'],['MPESA','M-Pesa'],['ORANGE_MONEY','Orange Money'],['AIRTEL_MONEY','Airtel Money'],['TRANSFER','Virement'],
-          ].map(([value,label])=><button type="button" key={value} className={method===value?'pos-payment-choice selected':'pos-payment-choice'} onClick={()=>setMethod(value)}>{label}</button>)}</div>
-          {method === 'CARD' ? (
-            <div className="pos-terminal-panel">
-              <h3>Paiement par carte</h3>
-              <strong className="pos-terminal-amount">{money(payment?.remainingAmount ?? orderRemaining, order.currency)}</strong>
-              <p>Commande {order.number}</p><p>TPE : {terminalConfig.data?.terminalId ?? (terminalConfig.data?.mode==='MOCK'?'TPE-DEV-01':'à configurer')} · Mode {terminalConfig.data?.mode ?? 'chargement…'}</p>
-              {terminalConfig.data?.mode === 'INTEGRATED' && <p className="error">Aucun adaptateur bancaire officiel n’est configuré. Aucun paiement ne sera envoyé.</p>}
-              {terminalConfig.data?.mode === 'MANUAL' && <><p>Effectuez d’abord la transaction sur le terminal indépendant. Saisissez uniquement la référence fournie par le TPE; jamais de numéro de carte, PIN ou CVV.</p><label>Référence de transaction<input value={reference} maxLength={120} autoComplete="off" onChange={e=>setReference(e.target.value)} placeholder="Référence indiquée sur le TPE"/></label></>}
-              {terminalConfig.data?.mode !== 'INTEGRATED' && <button type="button" className="primary full" disabled={action.busy||!session.data||!terminalConfig.data||(terminalConfig.data.mode==='MANUAL'&&!reference.trim())} onClick={()=>action.run(async()=>{if(!terminalStartKey.current)terminalStartKey.current=crypto.randomUUID();const body={cashSessionId:session.data!.id,...(terminalConfig.data?.mode==='MANUAL'?{externalReference:reference.trim()}:{})};const result=await api<PaymentResult>('/orders/'+order.id+'/terminal-payments',body,terminalStartKey.current);setPayment({...result,remainingAmount:result.remainingAmount??'0',orderStatus:'RECEIVED'});setReference('');},terminalConfig.data?.mode==='MOCK'?'Simulation TPE prête. Choisissez son résultat.':'Référence transmise. Confirmez après vérification.')}>{terminalConfig.data?.mode==='MOCK'?'Lancer la simulation TPE':terminalConfig.data?.mode==='MANUAL'?'Enregistrer la référence TPE':'Chargement du mode TPE…'}</button>}
-            </div>
-          ) : (
-            <>
-              {method !== 'CASH' && <label>Référence externe<input value={reference} maxLength={120} autoComplete="off" onChange={e=>setReference(e.target.value)} placeholder="Référence non sensible du paiement"/></label>}
-              {method === 'CASH' && <div className="form-grid"><label>Devise reçue<select value={currency} onChange={e=>setCurrency(e.target.value)}><option value="CDF">CDF</option><option value="USD">USD</option></select></label></div>}
-              <label>{method==='CASH'?'Montant reçu':`Montant reçu (${order.currency})`}<input value={received} inputMode="decimal" onChange={e=>setReceived(e.target.value)}/></label>
-              {method === 'CASH' && <p className="muted small">Le serveur vérifie le montant, le taux autorisé et le fonds de caisse avant de confirmer.</p>}
-              <button type="button" className="primary full" disabled={action.busy||!session.data||(method!=='CASH'&&!reference.trim())} onClick={()=>action.run(submitOrderPayment,method==='CASH'?'Paiement espèces enregistré.':'Paiement créé en attente de confirmation autorisée.')}>{method==='CASH'?'Enregistrer le paiement':'Enregistrer le paiement externe'}</button>
-            </>
-          )}
-        </>
-      )}
-    </>
-  )}</section>
-</div>
-</>;
+    {order&&(completed||order.status==='SERVED'||payment?.status==='CONFIRMED')&&<section className="receipt print-only"><h1>JAMI FOOD</h1><strong>{order.receiptCopy??(order.client?'TICKET DE SERVICE':'REÇU DE VENTE')}</strong>{order.receiptCopy==='DUPLICATA'&&<h2>DUPLICATA</h2>}<p>{order.client?`${order.client.firstName} ${order.client.lastName}`:'Vente comptoir anonyme'}</p>{order.subscriptionName&&<small>{order.subscriptionName}</small>}<p>{serviceLabel[order.serviceCode??'']??'Vente POS'} · {order.number}</p><p>{new Intl.DateTimeFormat('fr-CD',{dateStyle:'medium',timeStyle:'short'}).format(new Date(order.handoverAt??order.createdAt??new Date()))}</p>{order.items?.map(line=><div key={line.id}><span>{line.productSnapshot.name??'Article'} × {line.quantity}</span><strong>{money(line.lineTotal,order.currency)}</strong></div>)}<hr/><p>Valeur commerciale : {money(order.commercialTotal??order.totalAmount,order.currency)}</p>{Number(order.coveredAmount)>0&&<p>Couvert abonnement : {money(order.coveredAmount,order.currency)}</p>}<p>Montant encaissé : {money(order.paidAmount??payment?.amountDue??'0',order.currency)}</p><p>Caissier : {user?.firstName} {user?.lastName}</p><p>Merci</p></section>}
+  </>;
 }

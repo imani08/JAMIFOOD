@@ -31,6 +31,7 @@ async function verifyPassword(stored: string, password: string) {
 const hash = (token: string) => createHash('sha256').update(token).digest('hex');
 const cookieToken = (req: Request) => req.headers.cookie?.split(';').map(x => x.trim()).find(x => x.startsWith('jami_session='))?.slice(13);
 const cookieOptions = () => ({ httpOnly: true, secure: process.env.COOKIE_SECURE === 'true', sameSite: 'strict' as const, path: '/' });
+const cashierPermissionAllowList = new Set(['auth.session', 'auth.password-change', 'sales.create']);
 @Injectable()
 export class AuthService {
   constructor(private readonly prisma: PrismaService) {}
@@ -64,7 +65,10 @@ export class AuthService {
     if (!session || session.user.status !== 'ACTIVE' || session.expiresAt <= new Date() || Date.now() - session.lastActivityAt.getTime() > Number(process.env.SESSION_IDLE_MINUTES ?? 30) * 60000) throw new DomainError('SESSION_EXPIRED', 'Votre session a expiré. Reconnectez-vous.', 401);
     await this.prisma.session.update({ where: { id: session.id }, data: { lastActivityAt: new Date() } });
     const u = session.user;
-    return { sessionId: session.id, actor: { id: u.id, username: u.username, firstName: u.firstName, lastName: u.lastName, roles: u.roles.map(r => r.role.code), permissions: [...new Set(u.roles.flatMap(r => r.role.permissions.map(p => p.permission.code)))] } };
+    const roles = u.roles.map(r => r.role.code);
+    const permissions = [...new Set(u.roles.flatMap(r => r.role.permissions.map(p => p.permission.code)))];
+    const effectivePermissions = roles.includes('CAISSIER') ? permissions.filter(permission => cashierPermissionAllowList.has(permission)) : permissions;
+    return { sessionId: session.id, actor: { id: u.id, username: u.username, firstName: u.firstName, lastName: u.lastName, roles, permissions: effectivePermissions } };
   }
   async logout(req: AuthRequest, res: Response) {
     await this.prisma.session.deleteMany({ where: { id: req.sessionId } });

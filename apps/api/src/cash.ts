@@ -12,7 +12,7 @@ import { DomainError } from './http';
 export class CashController {
   constructor(private readonly db: PrismaService) {}
 
-  @RequireAny('cash.read','sales.read','orders.manage','subscriptions.create')
+  @RequireAny('cash.read','sales.read','orders.manage','subscriptions.create','sales.create')
   @Get()
   async current(@Req() req: AuthRequest) {
     return {
@@ -26,24 +26,66 @@ export class CashController {
           id: true,
           openedAt: true,
           status: true,
+          openingUsd: true,
+          openingCdf: true,
           cashRegister: true,
         },
       }),
     };
   }
 
-  @RequireAny('cash.open','subscriptions.create','orders.manage')
+  @Require('cash.open')
   @Get('registers')
   async registers() {
     return {
       success: true,
       data: await this.db.cashRegister.findMany({
-        where: { active: true },
+        orderBy: [{ active: 'desc' }, { label: 'asc' }],
       }),
     };
   }
 
-  @RequireAny('cash.open','subscriptions.create','orders.manage')
+  @Require('cash.open')
+  @Get('cashiers')
+  async cashiers(@Req() req: AuthRequest) {
+    const users = await this.db.user.findMany({ where: { status: 'ACTIVE', roles: { some: { role: { code: 'CAISSIER' } } } }, orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }], select: { id: true, firstName: true, lastName: true, username: true } });
+    if (!users.some(user => user.id === req.actor.id)) users.push({ id: req.actor.id, firstName: req.actor.firstName, lastName: req.actor.lastName, username: req.actor.username });
+    return { success: true, data: users };
+  }
+
+  @Require('cash.open')
+  @Get('active-sessions')
+  async activeSessions() {
+    const sessions = await this.db.cashSession.findMany({ where: { status: { in: ['OPEN','COUNTING'] } }, orderBy: { openedAt: 'desc' }, select: { id: true, status: true, openedAt: true, cashierId: true, openingUsd: true, openingCdf: true, cashRegister: { select: { id: true, code: true, label: true } } } });
+    const cashiers = await this.db.user.findMany({ where: { id: { in: sessions.map(session => session.cashierId) } }, select: { id: true, firstName: true, lastName: true } });
+    return { success: true, data: sessions.flatMap(session => { const cashier = cashiers.find(item => item.id === session.cashierId); return cashier ? [{ id: session.id, status: session.status, openedAt: session.openedAt, openingUsd: session.openingUsd.toString(), openingCdf: session.openingCdf.toString(), cashier, cashRegister: session.cashRegister }] : []; }) };
+  }
+
+  @Require('cash.open')
+  @Post('registers')
+  createRegister(@Body() input: unknown, @Headers('idempotency-key') key: string | undefined, @Req() req: AuthRequest) {
+    const body = z.object({ code: z.string().trim().min(1).max(30).regex(/^[A-Za-z0-9_-]+$/), label: z.string().trim().min(2).max(100) }).strict().parse(input);
+    return mutate(this.db, 'cash.register-create', key, req.actor.id, body, async tx => {
+      const register = await tx.cashRegister.create({ data: body });
+      await audit(tx, req.actor.id, 'CASH_REGISTER_CREATED', 'CashRegister', register.id, body);
+      return register;
+    }).then(data => ({ success: true, data }));
+  }
+
+  @Require('cash.open')
+  @Post('registers/:id/update')
+  updateRegister(@Param('id') id: string, @Body() input: unknown, @Headers('idempotency-key') key: string | undefined, @Req() req: AuthRequest) {
+    uuid.parse(id);
+    const body = z.object({ code: z.string().trim().min(1).max(30).regex(/^[A-Za-z0-9_-]+$/).optional(), label: z.string().trim().min(2).max(100).optional(), active: z.boolean().optional() }).strict().refine(value => Object.keys(value).length > 0).parse(input);
+    return mutate(this.db, 'cash.register-update', key, req.actor.id, { id, ...body }, async tx => {
+      if (body.active === false && await tx.cashSession.findFirst({ where: { cashRegisterId: id, status: { in: ['OPEN','COUNTING'] } } })) throw new DomainError('CASH_REGISTER_IN_USE', 'Clôturez la session active avant de désactiver cette caisse.', 409);
+      const register = await tx.cashRegister.update({ where: { id }, data: body });
+      await audit(tx, req.actor.id, 'CASH_REGISTER_UPDATED', 'CashRegister', id, body);
+      return register;
+    }).then(data => ({ success: true, data }));
+  }
+
+  @Require('cash.open')
   @Post('open')
   open(
     @Body() input: unknown,
@@ -55,9 +97,11 @@ export class CashController {
         cashRegisterId: uuid,
         openingUsd: money,
         openingCdf: money,
+        cashierId: uuid,
       })
       .strict()
       .parse(input);
+    const targetCashierId = body.cashierId;
 
     return mutate(
       this.db,
@@ -93,7 +137,7 @@ export class CashController {
             where: {
               OR: [
                 { cashRegisterId: body.cashRegisterId },
-                { cashierId: req.actor.id },
+              { cashierId: targetCashierId },
               ],
               status: { in: ['OPEN', 'COUNTING'] },
             },
@@ -105,8 +149,10 @@ export class CashController {
           );
         }
 
+        const cashier = await tx.user.findFirst({ where: { id: targetCashierId, status: 'ACTIVE', OR: [{ roles: { some: { role: { code: 'CAISSIER' } } } }, { id: req.actor.id }] }, select: { id: true } });
+        if (!cashier) throw new DomainError('CASHIER_INVALID', 'Le Caissier sélectionné est introuvable ou inactif.', 400);
         const session = await tx.cashSession.create({
-          data: { ...body, cashierId: req.actor.id },
+          data: { cashRegisterId: body.cashRegisterId, openingUsd: body.openingUsd, openingCdf: body.openingCdf, cashierId: targetCashierId },
         });
 
         await audit(
@@ -257,11 +303,9 @@ export class CashController {
       req.actor.id,
       { id, ...body },
       async (tx) => {
-        const session = await lockCash(
-          tx,
-          id,
-          req.actor.id,
-        );
+        await tx.$queryRaw`SELECT id FROM "CashSession" WHERE id = ${id}::uuid FOR UPDATE`;
+        const session = await tx.cashSession.findUnique({ where: { id } });
+        if (!session || session.status !== 'OPEN' || (session.cashierId !== req.actor.id && !req.actor.permissions.includes('cash.close'))) throw new DomainError('CASH_SESSION_REQUIRED', 'Session active introuvable ou non autorisée.', 403);
 
         if (
           await tx.payment.count({
@@ -399,7 +443,8 @@ export class CashController {
 
   @RequireAny('cash.read','sales.read','orders.manage','subscriptions.create')
   @Get('closings')
-  async closings() {
+  async closings(@Req() req: AuthRequest) {
+    if (req.actor.roles.includes('CAISSIER')) throw new DomainError('FORBIDDEN', 'Le Caissier peut consulter uniquement sa session courante.', 403);
     return {
       success: true,
       data: await this.db.cashClosing.findMany({

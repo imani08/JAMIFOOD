@@ -7,6 +7,7 @@ export const createOrderSchema = z
   .object({
     clientId: uuid.optional(),
     menuVersionId: uuid.optional(),
+    serviceCode: z.enum(['BREAKFAST','LUNCH','DINNER']).optional(),
 
     categoryCode: z
       .string()

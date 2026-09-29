@@ -171,6 +171,7 @@ const calendarSettingSchema = z.object({
 
 const settingsRequiringConfiguration: Record<string, z.ZodTypeAny> = {
   calendrier: calendarSettingSchema,
+  pos_anonymous_category: z.object({ categoryCode: z.string().trim().min(1).max(50) }).strict(),
   acompte: z.object({ enabled: z.boolean() }).passthrough(),
   flex: z.object({ enabled: z.boolean() }).passthrough(),
   report: z.object({ enabled: z.boolean() }).passthrough(),
@@ -1537,6 +1538,10 @@ const product =
         const validator = settingsRequiringConfiguration[key];
         if (validator && !validator.safeParse(before.value).success) {
           throw new DomainError('SETTING_CONFIGURATION_INVALID', `Le réglage « ${key} » doit d’abord contenir une configuration complète.`, 409);
+        }
+        if (key === 'pos_anonymous_category') {
+          const { categoryCode } = z.object({ categoryCode: z.string().trim().min(1).max(50) }).strict().parse(before.value);
+          if (!await tx.clientCategory.findFirst({ where: { code: categoryCode, active: true } })) throw new DomainError('SETTING_CONFIGURATION_INVALID', 'La catégorie de tarification sélectionnée est inconnue ou inactive.', 409);
         }
 
         let adjustedSubscriptions = 0;
