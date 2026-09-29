@@ -18,6 +18,9 @@ import { DomainError } from './http';
 import { mutate, Tx } from './transaction';
 
 async function restrictDelegation(tx: Tx, actor: AuthRequest['actor'], roleCodes: string[]) {
+  if (actor.roles.includes('RESPONSABLE_RESTAURANT') && roleCodes.some(code => !['GESTIONNAIRE', 'CAISSIER'].includes(code))) {
+    throw new DomainError('ROLE_DELEGATION_FORBIDDEN', 'Le Responsable peut affecter les rôles opérationnels Gestionnaire et Caissier uniquement.', 403);
+  }
   const grants=await tx.rolePermission.findMany({where:{role:{code:{in:roleCodes}}},include:{permission:true}});
   if(grants.some(grant=>!actor.permissions.includes(grant.permission.code))) throw new DomainError('ROLE_DELEGATION_FORBIDDEN','Vous ne pouvez pas attribuer ou administrer des permissions que vous ne possédez pas.',403);
 }
@@ -166,8 +169,9 @@ export class UsersController {
 
   @Require('users.read')
   @Get('roles')
-  async roles() {
+  async roles(@Req() req: AuthRequest) {
     const data = await this.db.role.findMany({
+      where: req.actor.roles.includes('RESPONSABLE_RESTAURANT') ? { code: { in: ['GESTIONNAIRE', 'CAISSIER'] } } : undefined,
       orderBy: {
         code: 'asc',
       },

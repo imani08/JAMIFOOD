@@ -12,7 +12,7 @@ import {
 import { Prisma } from '@jami/database';
 
 import {
-  serviceEndDate,
+  endDate,
   localDate,
   serviceRightDates,
 } from '@jami/shared';
@@ -1141,12 +1141,9 @@ async alerts() {
         const calendarSetting = await tx.setting.findUnique({ where: { key: 'calendrier' } });
         if (!calendarSetting?.validated) throw new DomainError('CALENDAR_NOT_VALIDATED', 'Le calendrier commercial doit être validé avant de créer un abonnement.', 409);
         const calendar = z.object({ weekdays: z.array(z.number().int().min(1).max(5)).min(1), closures: z.array(dateSchema).default([]) }).passthrough().parse(calendarSetting.value);
-        const endsOn =
-          serviceEndDate(
-            body.startsOn,
-            durationDays,
-            calendar.closures,
-          );
+        // Subscription periods are calendar periods. Service days only decide
+        // which MealRights are generated inside this fixed inclusive period.
+        const endsOn = endDate(body.startsOn, durationDays);
 
         /*
          * Anti-chevauchement.
@@ -2025,12 +2022,7 @@ renew(
       if (!calendarSetting?.validated) throw new DomainError('CALENDAR_NOT_VALIDATED', 'Le calendrier commercial doit être validé avant de renouveler un abonnement.', 409);
       const calendar = z.object({ weekdays: z.array(z.number().int().min(1).max(5)).min(1), closures: z.array(dateSchema).default([]) }).passthrough().parse(calendarSetting.value);
 
-      const endsOn =
-        serviceEndDate(
-          startsOn,
-          durationDays,
-          calendar.closures,
-        );
+      const endsOn = endDate(startsOn, durationDays);
 
       const overlap =
         await tx.subscription.findFirst(

@@ -13,7 +13,7 @@ describe('calendrier Kinshasa', () => {
     expect(isServiceDay('2026-09-29', ['2026-09-29'])).toBe(false);
     expect(serviceEndDate('2026-04-30', 2)).toBe('2026-05-04');
     expect(serviceEndDate('2026-09-28', 2, ['2026-09-29'])).toBe('2026-09-30');
-    expect(serviceRightDates('2026-09-28', '2026-10-02', [1,2,3,4,5])).toEqual(['2026-09-28','2026-09-30','2026-10-01','2026-10-02']);
+    expect(serviceRightDates('2026-09-28', '2026-10-02', [1,2,3,4,5], ['2026-09-29'])).toEqual(['2026-09-28','2026-09-30','2026-10-01','2026-10-02']);
     expect(drcPublicHolidays(2026)).toContain('2026-05-01');
   });
 });

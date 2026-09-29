@@ -1,16 +1,26 @@
 import { PrismaClient } from '@prisma/client';
 import { randomBytes, scryptSync } from 'node:crypto';
+import { rolePermissions } from './role-permissions';
 const db = new PrismaClient();
 async function main() {
   if (process.env.NODE_ENV === 'production' || process.env.SEED_DEMO !== 'true' || !process.env.DEMO_PASSWORD || process.env.DEMO_PASSWORD.length < 12) throw new Error('Seed réservé à DEMO avec mot de passe externe de 12 caractères minimum.');
-  const rolePermissions: Record<string,string[]> = {
-    RESPONSABLE_RESTAURANT: ['auth.session','auth.password-change','users.read','users.create','users.update','users.disable','clients.read','clients.create','clients.update','clients.archive','subscriptions.read','subscriptions.create','subscriptions.suspend','subscriptions.cancel','pricing.read','pricing.update','cash.open','cash.close','cash.read','cash.expense','cash.validate','cash.refund','cash.adjust','sales.create','sales.read','orders.create','orders.read','orders.manage','orders.cancel','meal.correct','meal.exception','payments.confirm','reports.read','reports.export','audit.read','stock.read','stock.adjust','stock.inventory','menus.read','menus.write','menus.manage','menus.publish'],
-    GESTIONNAIRE: ['auth.session','auth.password-change','clients.read','clients.create','clients.update','clients.archive','subscriptions.read','subscriptions.create','subscriptions.suspend','subscriptions.cancel','orders.manage','orders.cancel','sales.read','cash.read','cash.open','cash.close','stock.read','reports.read','menus.read'],
-    CAISSIER: ['auth.session','auth.password-change','sales.create'],
-    ADMIN_TECHNIQUE: ['auth.session','auth.password-change','users.read','users.create','users.update','users.disable'],
-  };  for (const [code,permissions] of Object.entries(rolePermissions)) {
+  const permissionLabels: Record<string,string> = {
+    'auth.session':'Accès à la session', 'auth.password-change':'Changer son mot de passe',
+    'users.read':'Consulter les utilisateurs', 'users.create':'Créer des utilisateurs', 'users.update':'Modifier les utilisateurs', 'users.disable':'Activer ou désactiver les utilisateurs',
+    'clients.read':'Consulter les abonnés', 'clients.create':'Créer des abonnés', 'clients.update':'Modifier les abonnés', 'clients.archive':'Archiver les abonnés',
+    'subscriptions.read':'Consulter les abonnements', 'subscriptions.create':'Créer et renouveler les abonnements', 'subscriptions.suspend':'Suspendre les abonnements', 'subscriptions.cancel':'Annuler les abonnements',
+    'pricing.read':'Consulter les prix', 'pricing.update':'Modifier les prix', 'cash.open':'Gérer les ouvertures de caisse', 'cash.close':'Clôturer les caisses', 'cash.read':'Consulter les caisses',
+    'cash.expense':'Enregistrer les dépenses', 'cash.validate':'Valider les clôtures', 'cash.refund':'Rembourser les paiements', 'cash.adjust':'Ajuster la caisse',
+    'sales.create':'Enregistrer les ventes', 'sales.read':'Consulter les ventes', 'orders.create':'Créer des commandes', 'orders.read':'Consulter les commandes', 'orders.manage':'Gérer les commandes', 'orders.cancel':'Annuler les commandes',
+    'meal.correct':'Corriger les droits repas', 'meal.exception':'Autoriser une exception de droit', 'payments.confirm':'Confirmer les paiements', 'reports.read':'Consulter les rapports', 'reports.export':'Exporter les rapports', 'audit.read':'Consulter le journal d’audit',
+    'stock.read':'Consulter le stock', 'stock.adjust':'Modifier le stock', 'stock.inventory':'Réaliser les inventaires', 'menus.read':'Consulter les menus', 'menus.write':'Modifier les menus', 'menus.manage':'Gérer les menus', 'menus.publish':'Publier les menus',
+  };
+  for (const code of new Set(Object.values(rolePermissions).flat())) {
+    await db.permission.upsert({ where: { code }, update: {}, create: { code, label: permissionLabels[code] ?? code } });
+  }
+  for (const [code,permissions] of Object.entries(rolePermissions)) {
     const role=await db.role.upsert({where:{code},update:{},create:{code,label:code}});
-    if(code==='CAISSIER'){const forbidden=await db.permission.findMany({where:{code:{notIn:permissions}},select:{id:true}});await db.rolePermission.deleteMany({where:{roleId:role.id,permissionId:{in:forbidden.map(permission=>permission.id)}}});}
+    if(code==='CAISSIER'||code==='RESPONSABLE_RESTAURANT'){const forbidden=await db.permission.findMany({where:{code:{notIn:permissions}},select:{id:true}});await db.rolePermission.deleteMany({where:{roleId:role.id,permissionId:{in:forbidden.map(permission=>permission.id)}}});}
     for (const permissionCode of permissions) {const permission=await db.permission.findUniqueOrThrow({where:{code:permissionCode}});await db.rolePermission.upsert({where:{roleId_permissionId:{roleId:role.id,permissionId:permission.id}},update:{},create:{roleId:role.id,permissionId:permission.id}});}
   }
   const salt=randomBytes(16).toString('hex'); const passwordHash='scrypt$'+salt+'$'+scryptSync(process.env.DEMO_PASSWORD,salt,64).toString('hex');

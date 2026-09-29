@@ -28,6 +28,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
         P2002:{status:409,code:'UNIQUE_CONFLICT',message:'Une donnée identique existe déjà.'},
         P2003:{status:409,code:'RELATED_DATA_UNAVAILABLE',message:'Une donnée liée à cette opération n’est plus disponible.'},
         P2025:{status:404,code:'NOT_FOUND',message:'Élément introuvable.'},
+        P2022:{status:503,code:'SCHEMA_MISMATCH',message:'Le schéma de la base ne correspond pas à cette version de l’application. Vérifiez les migrations Prisma.'},
         P2034:{status:409,code:'TRANSACTION_CONFLICT',message:'La commande a été modifiée simultanément. Réessayez.'},
       };
       const mapped=known[exception.code]??{status:409,code:'DATA_CONFLICT',message:'Les données de la commande ont changé. Actualisez le menu et réessayez.'};

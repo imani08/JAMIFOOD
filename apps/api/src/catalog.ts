@@ -533,6 +533,67 @@ export class CatalogController {
     private readonly db: PrismaService,
   ) {}
 
+  @Require('reports.read')
+  @Get('dashboard/operations')
+  async operationsDashboard() {
+    const today = localDate();
+    const tomorrowDate = new Date(`${today}T00:00:00.000Z`);
+    tomorrowDate.setUTCDate(tomorrowDate.getUTCDate() + 1);
+    const tomorrow = tomorrowDate.toISOString().slice(0, 10);
+    const start = new Date(`${today}T00:00:00+01:00`);
+    const end = new Date(`${tomorrow}T00:00:00+01:00`);
+    const day = new Date(`${today}T00:00:00.000Z`);
+    const inSevenDays = new Date(day);
+    inSevenDays.setUTCDate(inSevenDays.getUTCDate() + 7);
+    const todayOrders = { businessDate: day };
+    const [
+      orderStatuses,
+      directSales,
+      payments,
+      servedMeals,
+      servedSubscribers,
+      consumedRights,
+      activeSubscriptions,
+      expiringSubscriptions,
+      activeSessions,
+      publishedMenus,
+      lowStock,
+      recentActivity,
+    ] = await Promise.all([
+      this.db.order.groupBy({ by: ['status'], where: todayOrders, _count: true }),
+      this.db.order.groupBy({ by: ['currency'], where: { ...todayOrders, sourceChannel: 'POS', status: { in: ['CONFIRMED', 'READY', 'SERVED'] } }, _sum: { totalAmount: true }, _count: true }),
+      this.db.payment.groupBy({ by: ['receivedCurrency', 'method'], where: { status: { in: ['CONFIRMED', 'REFUNDED'] }, confirmedAt: { gte: start, lt: end } }, _sum: { receivedAmount: true }, _count: true }),
+      this.db.order.count({ where: { ...todayOrders, status: 'SERVED' } }),
+      this.db.order.groupBy({ by: ['clientId'], where: { ...todayOrders, status: 'SERVED', clientId: { not: null } }, _count: true }),
+      this.db.mealConsumption.count({ where: { consumedAt: { gte: start, lt: end } } }),
+      this.db.subscription.count({ where: { status: { in: ['ACTIVE', 'SCHEDULED'] }, startsOn: { lte: day }, endsOn: { gte: day }, balance: { lte: 0 } } }),
+      this.db.subscription.count({ where: { status: { in: ['ACTIVE', 'SCHEDULED'] }, startsOn: { lte: day }, endsOn: { gte: day, lt: inSevenDays } } }),
+      this.db.cashSession.findMany({ where: { status: { in: ['OPEN', 'COUNTING'] } }, orderBy: { openedAt: 'desc' }, select: { id: true, status: true, openedAt: true, cashierId: true, cashRegister: { select: { code: true, label: true } } } }),
+      this.db.menu.findMany({ where: { businessDate: day, versions: { some: { status: 'PUBLISHED' } } }, select: { id: true, serviceCode: true, versions: { where: { status: 'PUBLISHED' }, orderBy: { version: 'desc' }, take: 1, select: { id: true, version: true } } }, orderBy: { serviceCode: 'asc' } }),
+      this.db.$queryRaw<Array<{id:string;code:string;name:string;unit:string;quantity:Prisma.Decimal;alertThreshold:Prisma.Decimal}>>`SELECT "id", "code", "name", "unit", "quantity", "alertThreshold" FROM "StockItem" WHERE "active" = true AND "quantity" <= "alertThreshold" ORDER BY "quantity" ASC, "id" ASC LIMIT 10`,
+      this.db.auditLog.findMany({ where: { createdAt: { gte: start, lt: end } }, orderBy: { createdAt: 'desc' }, take: 10, select: { id: true, action: true, entityType: true, entityId: true, createdAt: true, actor: { select: { firstName: true, lastName: true, username: true } } } }),
+    ]);
+    const counts = Object.fromEntries(orderStatuses.map(row => [row.status, row._count]));
+    const activeCashierIds = [...new Set(activeSessions.map(session => session.cashierId))];
+    const cashiers = activeCashierIds.length ? await this.db.user.findMany({ where: { id: { in: activeCashierIds } }, select: { id: true, firstName: true, lastName: true, username: true } }) : [];
+    const cashierById = new Map(cashiers.map(cashier => [cashier.id, cashier]));
+    return { success: true, data: {
+      date: today,
+      orders: { total: Object.values(counts).reduce((sum, count) => sum + count, 0), received: counts.RECEIVED ?? 0, confirmed: counts.CONFIRMED ?? 0, readyForPickup: counts.READY ?? 0, served: counts.SERVED ?? 0, cancelled: counts.CANCELLED ?? 0 },
+      directSales: directSales.map(row => ({ currency: row.currency, amount: row._sum.totalAmount?.toString() ?? '0', count: row._count })),
+      payments: payments.map(row => ({ currency: row.receivedCurrency, method: row.method, amount: row._sum.receivedAmount?.toString() ?? '0', count: row._count })),
+      servedMeals,
+      servedSubscribers: servedSubscribers.length,
+      consumedRights,
+      activeSubscriptions,
+      expiringSubscriptions,
+      activeSessions: activeSessions.map(session => ({ ...session, cashier: cashierById.get(session.cashierId) ?? null })),
+      publishedMenus: publishedMenus.map(menu => ({ serviceCode: menu.serviceCode, version: menu.versions[0]?.version ?? null })),
+      lowStock: lowStock.map(item => ({ ...item, quantity: item.quantity.toString(), alertThreshold: item.alertThreshold.toString() })),
+      recentActivity,
+    } };
+  }
+
   // ============================================================
   // POS : catalogue vendable
   // ============================================================
